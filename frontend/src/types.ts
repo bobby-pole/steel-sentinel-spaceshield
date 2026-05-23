@@ -4,7 +4,7 @@ export interface Unit {
   lat: number;
   lng: number;
   status: "active" | "idle" | "sos";
-  role: "recon" | "medic" | "engineer" | "command";
+  role: "recon" | "medic" | "engineer" | "command" | "drone";
 }
 
 export type InfraCategory =
@@ -14,14 +14,12 @@ export type InfraCategory =
   | "pumping_station"
   | "water_tower"
   | "reservoir"
-  | "water_pipe"
   | "hospital"
   | "fire_station"
   | "police"
   | "industrial"
   | "railway"
   | "power_line"
-  | "waterway"
   | "highway"
   | "other";
 

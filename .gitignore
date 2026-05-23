@@ -1,6 +1,9 @@
 # Mapy offline — za duże do repo (~333 MB)
 backend/map_tiles/
 
+# Baza wektorowa RAG — za duża do repo
+backend/chroma/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -14,3 +17,4 @@ node_modules/
 .env.local
 
 .claude
+.DS_Store

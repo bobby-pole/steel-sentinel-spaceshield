@@ -2,27 +2,31 @@ import type { Unit } from "../types";
 
 const STATUS_COLORS: Record<Unit["status"], string> = {
   active: "#22c55e",
-  idle:   "#eab308",
-  sos:    "#ef4444",
+  idle: "#eab308",
+  sos: "#ef4444",
 };
 
 const ROLE_EMOJI: Record<Unit["role"], string> = {
-  recon:    "🔭",
-  medic:    "🏥",
+  recon: "🔭",
+  medic: "🏥",
   engineer: "🔧",
-  command:  "🎯",
+  command: "🎯",
+  drone: "🚁",
 };
 
 interface Props {
-  units:        Unit[];
+  units: Unit[];
   selectedUnit: string | null;
   onSelectUnit: (id: string) => void;
 }
 
 export function StatusPanel({ units, selectedUnit, onSelectUnit }: Props) {
+  // SOS zawsze na górze, reszta w stałej kolejności wg id — bez skakania przy zmianie active↔idle
   const sorted = [...units].sort((a, b) => {
-    const priority: Record<Unit["status"], number> = { sos: 0, active: 1, idle: 2 };
-    return priority[a.status] - priority[b.status];
+    const asos = a.status === "sos" ? 0 : 1;
+    const bsos = b.status === "sos" ? 0 : 1;
+    if (asos !== bsos) return asos - bsos;
+    return a.id.localeCompare(b.id);
   });
 
   return (
@@ -37,23 +41,23 @@ export function StatusPanel({ units, selectedUnit, onSelectUnit }: Props) {
             key={unit.id}
             onClick={() => onSelectUnit(unit.id)}
             style={{
-              display:    "flex",
+              display: "flex",
               alignItems: "center",
-              gap:        8,
-              padding:    "8px 12px",
+              gap: 8,
+              padding: "8px 12px",
               background: unit.id === selectedUnit ? "#334155" : "transparent",
-              border:     unit.id === selectedUnit ? "1px solid #475569" : "1px solid transparent",
+              border: unit.id === selectedUnit ? "1px solid #475569" : "1px solid transparent",
               borderRadius: 8,
-              color:      "#e2e8f0",
-              cursor:     "pointer",
-              textAlign:  "left",
-              fontSize:   13,
+              color: "#e2e8f0",
+              cursor: "pointer",
+              textAlign: "left",
+              fontSize: 13,
               transition: "background 0.15s",
             }}
           >
             <div style={{
-              width:      8,
-              height:     8,
+              width: 8,
+              height: 8,
               borderRadius: "50%",
               background: STATUS_COLORS[unit.status],
               flexShrink: 0,
@@ -67,12 +71,12 @@ export function StatusPanel({ units, selectedUnit, onSelectUnit }: Props) {
             </div>
             {unit.status === "sos" && (
               <span style={{
-                background:   "#ef4444",
-                color:        "white",
-                padding:      "2px 6px",
+                background: "#ef4444",
+                color: "white",
+                padding: "2px 6px",
                 borderRadius: 4,
-                fontSize:     10,
-                fontWeight:   700,
+                fontSize: 10,
+                fontWeight: 700,
               }}>
                 SOS
               </span>

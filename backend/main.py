@@ -3,11 +3,13 @@ import os
 import random
 import math
 import json
+from pathlib import Path
 from typing import TypedDict
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+import httpx
 
 app = FastAPI()
 app.add_middleware(
@@ -46,8 +48,7 @@ UNITS: list[Unit] = [
     {"id": "alpha",   "name": "Zespół Alpha",        "lat": STALOWA_WOLA[0] + 0.01,  "lng": STALOWA_WOLA[1] - 0.01,  "status": "active", "role": "recon"},
     {"id": "bravo",   "name": "Zespół Bravo",         "lat": STALOWA_WOLA[0] - 0.005, "lng": STALOWA_WOLA[1] + 0.015, "status": "active", "role": "medic"},
     {"id": "charlie", "name": "Zespół Charlie",       "lat": STALOWA_WOLA[0] + 0.008, "lng": STALOWA_WOLA[1] + 0.008, "status": "idle",   "role": "engineer"},
-    {"id": "delta",   "name": "Dron Delta",           "lat": STALOWA_WOLA[0] + 0.02,  "lng": STALOWA_WOLA[1],         "status": "active", "role": "recon"},
-    {"id": "command", "name": "Punkt Dowodzenia",     "lat": STALOWA_WOLA[0],         "lng": STALOWA_WOLA[1],         "status": "active", "role": "command"},
+    {"id": "delta",   "name": "Dron Delta",           "lat": STALOWA_WOLA[0] + 0.02,  "lng": STALOWA_WOLA[1],         "status": "active", "role": "drone"},
     {"id": "command", "name": "Punkt Dowodzenia",     "lat": STALOWA_WOLA[0],         "lng": STALOWA_WOLA[1],         "status": "active", "role": "command"},
 ]
 
@@ -75,13 +76,59 @@ class CustomPointModel(BaseModel):
     name: str
     description: str
 
+# Persystentny stan ruchu dla jednostek pieszych (nagłówek + odcinki drogi)
+_foot_state: dict[str, dict] = {}
+
+def _is_drone(unit: Unit) -> bool:
+    return unit["role"] == "drone"
+
+def _foot_state_for(unit_id: str) -> dict:
+    if unit_id not in _foot_state:
+        _foot_state[unit_id] = {
+            "heading":       random.uniform(0, 360),  # 0=N, 90=E, 180=S, 270=W
+            "pause_left":    0,                       # ticki postoju
+            "ticks_to_turn": random.randint(6, 20),   # ticki do następnego skrzyżowania
+        }
+    return _foot_state[unit_id]
+
 def move_units():
     for unit in UNITS:
         if unit["role"] == "command":
             continue
-        speed = 0.0003 if unit["role"] != "recon" else 0.0009
-        unit["lat"] += random.uniform(-speed, speed)
-        unit["lng"] += random.uniform(-speed, speed)
+
+        if _is_drone(unit):
+            # Dron: szybki, losowy ruch omnikierunkowy — bez zmian
+            speed = 0.0009
+            unit["lat"] += random.uniform(-speed, speed)
+            unit["lng"] += random.uniform(-speed, speed)
+        else:
+            # Jednostka piesza: ruch wzdłuż "drogi" z zatrzymaniami na skrzyżowaniach
+            state = _foot_state_for(unit["id"])
+
+            if state["pause_left"] > 0:
+                # Postój — czekanie, sprawdzanie mapy, obserwacja
+                state["pause_left"] -= 1
+            else:
+                state["ticks_to_turn"] -= 1
+                if state["ticks_to_turn"] <= 0:
+                    # Skrzyżowanie: skręt o 0° / ±45° / ±90° + lekki szum
+                    turn = random.choice([-90, -45, 0, 0, 45, 90])
+                    state["heading"] = (state["heading"] + turn + random.gauss(0, 8)) % 360
+                    state["ticks_to_turn"] = random.randint(6, 20)
+                    # Krótka pauza przy skrzyżowaniu
+                    state["pause_left"] = random.randint(1, 3)
+                else:
+                    # Idzie prosto wzdłuż odcinka — minimalne odchylenie od kursu
+                    state["heading"] = (state["heading"] + random.gauss(0, 4)) % 360
+                    rad = math.radians(state["heading"])
+                    speed = 0.00018  # ~20 m/tick — ok. 4× wolniej niż dron
+                    unit["lat"] += math.cos(rad) * speed
+                    unit["lng"] += math.sin(rad) * speed
+
+                    # Sporadyczne zatrzymanie (6%) — patrol, obserwacja
+                    if random.random() < 0.06:
+                        state["pause_left"] = random.randint(3, 8)
+
         if random.random() < 0.05:
             unit["status"] = random.choice(["active", "idle", "sos"])
 
@@ -161,3 +208,114 @@ async def delete_custom_point(point_id: str):
     CUSTOM_POINTS = [p for p in CUSTOM_POINTS if p["id"] != point_id]
     save_custom_points(CUSTOM_POINTS)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# RAG — ChromaDB + Ollama
+# ---------------------------------------------------------------------------
+RAG_CHROMA_DIR  = Path(__file__).parent / "chroma"
+RAG_COLLECTION  = "steelsentinel"
+RAG_OLLAMA_URL  = "http://localhost:11434"
+RAG_EMBED_MODEL = "bge-m3"
+RAG_GEN_MODEL   = "bielik"
+
+_chroma_client = None
+_chroma_lock   = asyncio.Lock()
+
+
+async def _get_chroma_collection():
+    global _chroma_client
+    if _chroma_client is None:
+        async with _chroma_lock:
+            if _chroma_client is None:
+                import chromadb
+                _chroma_client = chromadb.PersistentClient(path=str(RAG_CHROMA_DIR))
+    return _chroma_client.get_collection(RAG_COLLECTION)
+
+
+class RagQuery(BaseModel):
+    question: str
+    n_results: int = 6
+
+
+@app.get("/api/rag/documents")
+async def list_rag_documents():
+    if not RAG_CHROMA_DIR.exists():
+        return {"error": "RAG index not built yet. Run: uv run python build_rag.py", "documents": []}
+    try:
+        col     = await _get_chroma_collection()
+        result  = col.get(include=["metadatas"])
+        sources: dict[str, dict] = {}
+        for meta in result["metadatas"]:
+            src = meta.get("source", "unknown")
+            if src not in sources:
+                sources[src] = {
+                    "source":      src,
+                    "type":        meta.get("type", "unknown"),
+                    "chunk_count": 0,
+                }
+            sources[src]["chunk_count"] += 1
+        docs = sorted(sources.values(), key=lambda x: (x["type"] != "document", x["source"]))
+        return {"documents": docs}
+    except Exception as e:
+        return {"error": str(e), "documents": []}
+
+
+@app.post("/api/rag/query")
+async def query_rag(req: RagQuery):
+    if not RAG_CHROMA_DIR.exists():
+        return {"error": "RAG index not built yet.", "answer": "", "chunks": []}
+    try:
+        async with httpx.AsyncClient() as http:
+            embed_resp = await http.post(
+                f"{RAG_OLLAMA_URL}/api/embed",
+                json={"model": RAG_EMBED_MODEL, "input": req.question},
+                timeout=30,
+            )
+            embed_resp.raise_for_status()
+            embedding = embed_resp.json()["embeddings"][0]
+
+        col     = await _get_chroma_collection()
+        results = col.query(
+            query_embeddings=[embedding],
+            n_results=req.n_results,
+            include=["documents", "metadatas", "distances"],
+        )
+
+        chunks = [
+            {
+                "text":     doc,
+                "metadata": meta,
+                "score":    round(1.0 - float(dist) / 2, 4),  # cosine dist ∈ [0,2]
+            }
+            for doc, meta, dist in zip(
+                results["documents"][0],
+                results["metadatas"][0],
+                results["distances"][0],
+            )
+        ]
+
+        context = "\n\n---\n\n".join(c["text"] for c in chunks)
+        prompt  = (
+            "Na podstawie poniższego kontekstu odpowiedz zwięźle i precyzyjnie na pytanie operatora.\n\n"
+            f"KONTEKST:\n{context}\n\n"
+            f"PYTANIE: {req.question}\n\n"
+            "ODPOWIEDŹ:"
+        )
+
+        answer = ""
+        try:
+            async with httpx.AsyncClient() as http:
+                gen_resp = await http.post(
+                    f"{RAG_OLLAMA_URL}/api/generate",
+                    json={"model": RAG_GEN_MODEL, "prompt": prompt, "stream": False},
+                    timeout=120,
+                )
+                if gen_resp.status_code == 200:
+                    answer = gen_resp.json().get("response", "")
+        except Exception:
+            pass  # Return chunks even if generation fails
+
+        return {"answer": answer, "chunks": chunks}
+    except Exception as e:
+        return {"error": str(e), "answer": "", "chunks": []}

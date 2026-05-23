@@ -28,7 +28,6 @@ export const MapContainer = () => {
     // Graf zależności energetycznych
     const { graph: dependencyGraph } = useDependencies();
     const [showDeps, setShowDeps] = useState(true);
-    const [showWaterDeps, setShowWaterDeps] = useState(true);
     const [isAddingMode, setIsAddingMode] = useState(false);
     const [customPoints, setCustomPoints] = useState<import("../src/types").CustomPoint[]>([]);
 
@@ -95,7 +94,9 @@ export const MapContainer = () => {
     useWebSocket("ws://localhost:8000/ws/map", (data) => {
         const msg = data as { type: string; units: Unit[] };
         if (msg.type === "positions") {
-            setUnits(msg.units);
+            // Deduplikacja po id — zabezpieczenie przed duplikatami z backendu
+            const seen = new Set<string>();
+            setUnits(msg.units.filter(u => !seen.has(u.id) && seen.add(u.id) !== undefined));
         }
     });
 
@@ -113,7 +114,6 @@ export const MapContainer = () => {
                     activeCategories={activeCategories}
                     dependencyGraph={dependencyGraph}
                     showDeps={showDeps}
-                    showWaterDeps={showWaterDeps}
                     mapStyle={mapStyle}
                     isAddingMode={isAddingMode}
                     onMapClick={handleAddPoint}
@@ -211,46 +211,6 @@ export const MapContainer = () => {
                             {dependencyGraph.substation_zones.length} stacji
                             {" · "}
                             {dependencyGraph.facility_deps.filter(f => f.powered_by_substations.length > 0).length} obiektów zasilanych
-                        </div>
-                    )}
-                </div>
-
-                {/* Panel zależności wodociągowych */}
-                <div style={{
-                    background: showWaterDeps ? "#0ea5e910" : "transparent",
-                    border: `1px solid ${showWaterDeps ? "#0ea5e930" : "#33415544"}`,
-                    borderRadius: 8,
-                    padding: "10px 12px",
-                }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                            <span style={{ fontSize: 14 }}>💧</span>
-                            <span style={{ fontSize: 13, fontWeight: 600, color: showWaterDeps ? "#e2e8f0" : "#64748b" }}>
-                                Sieć wodociągowa
-                            </span>
-                        </div>
-                        <button
-                            onClick={() => setShowWaterDeps((v) => !v)}
-                            style={{
-                                fontSize: 11,
-                                fontWeight: 700,
-                                padding: "2px 8px",
-                                borderRadius: 4,
-                                border: `1px solid ${showWaterDeps ? "#0ea5e944" : "#47556944"}`,
-                                background: showWaterDeps ? "#0ea5e922" : "transparent",
-                                color: showWaterDeps ? "#38bdf8" : "#64748b",
-                                cursor: "pointer",
-                                letterSpacing: "0.05em",
-                            }}
-                        >
-                            {showWaterDeps ? "WIDOCZNA" : "UKRYTA"}
-                        </button>
-                    </div>
-                    {showWaterDeps && dependencyGraph && (
-                        <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6, lineHeight: 1.5 }}>
-                            {dependencyGraph.water_pipes?.length || 0} rurociągów
-                            {" · "}
-                            {dependencyGraph.water_zones?.length || 0} stref wodociągowych
                         </div>
                     )}
                 </div>

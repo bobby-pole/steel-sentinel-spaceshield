@@ -10,7 +10,9 @@ interface RawElement {
   tags?: Record<string, string>;
 }
 
-function classify(tags: Record<string, string>): InfraCategory {
+function classify(tags: Record<string, string>): InfraCategory | null {
+  if (tags.waterway) return null;  // cieki naturalne — brak linii WFS, tylko środek geometrii
+  if (tags.man_made === "pipeline") return null;  // brak danych wodociągowych w OSM dla SW
   if (tags.power === "plant")                         return "power_plant";
   if (tags.power === "substation")                    return "substation";
   if (tags.power === "line")                          return "power_line";
@@ -24,9 +26,6 @@ function classify(tags: Record<string, string>): InfraCategory {
   if (tags.amenity === "police")                      return "police";
   if (tags.landuse === "industrial")                  return "industrial";
   if (tags.railway)                                   return "railway";
-  // Rurociąg ciśnieniowy — odróżniamy od naturalnych cieków
-  if (tags.man_made === "pipeline" && tags.substance === "water") return "water_pipe";
-  if (tags.waterway)                                  return "waterway";
   if (tags.highway)                                   return "highway";
   return "other";
 }
@@ -41,13 +40,11 @@ function label(tags: Record<string, string>, category: InfraCategory): string {
     pumping_station: "Pompownia wody",
     water_tower:     "Wieżyczka ciśnień",
     reservoir:       "Zbiornik wody",
-    water_pipe:      "Rurociąg ciśnieniowy",
     hospital:        "Szpital",
     fire_station:    "Straż pożarna",
     police:          "Policja",
     industrial:      "Strefa przemysłowa",
     railway:         "Kolej",
-    waterway:        "Droga wodna",
     highway:         "Droga",
     other:           "Obiekt",
   };
@@ -79,6 +76,7 @@ export function useInfrastructure() {
           if (lat === undefined || lon === undefined) continue;
 
           const category = classify(tags);
+          if (category === null) continue;
           processed.push({
             id:       el.id,
             type:     el.type,
