@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { HighlightLocation } from '../src/App';
+import { OperationLogOverlay } from '../src/components/OperationLogOverlay';
+import type { LogEntry } from '../src/components/OperationLogOverlay';
+import type { CriticalObject } from '../src/types';
 
 interface RagDocument {
   source: string;
@@ -195,9 +198,12 @@ function fmtDate(ts: number): string {
 
 interface DocumentsContainerProps {
   onShowOnMap?: (loc: HighlightLocation) => void;
+  logEntries?: LogEntry[];
+  criticalObjects?: Record<string, CriticalObject>;
+  onClearLog?: () => void;
 }
 
-export const DocumentsContainer: React.FC<DocumentsContainerProps> = ({ onShowOnMap }) => {
+export const DocumentsContainer: React.FC<DocumentsContainerProps> = ({ onShowOnMap, logEntries = [], criticalObjects = {}, onClearLog }) => {
   const [documents,   setDocuments]   = useState<RagDocument[]>([]);
   const [docsLoading, setDocsLoading] = useState(true);
   const [docsError,   setDocsError]   = useState<string | null>(null);
@@ -613,12 +619,17 @@ export const DocumentsContainer: React.FC<DocumentsContainerProps> = ({ onShowOn
       </div>
 
       {/* ── Kolumna 3: Log operacyjny (30%) ── */}
-      <div style={{ flex: '0 0 30%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #334155', backgroundColor: '#1e293b' }}>
+      <div style={{ flex: '0 0 30%', display: 'flex', flexDirection: 'column', minWidth: 0, borderLeft: '1px solid #334155', overflow: 'hidden' }}>
+        <div style={{ padding: '0.6rem 0.75rem', borderBottom: '1px solid #334155', backgroundColor: '#1e293b' }}>
           <h2 style={{ fontSize: '0.8rem', margin: 0, fontWeight: 700, color: '#64748b', letterSpacing: '0.08em' }}>LOG OPERACYJNY</h2>
         </div>
-        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <span style={{ fontSize: 12, color: '#1e3a5f', userSelect: 'none' }}>— brak wpisów —</span>
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          <OperationLogOverlay
+            entries={logEntries}
+            criticalObjects={criticalObjects}
+            onClear={onClearLog ?? (() => {})}
+            variant="panel"
+          />
         </div>
       </div>
 

@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { MapContainer } from "../containers/MapContainer";
 import { DocumentsContainer } from "../containers/DocumentsContainer";
+import { OperationLogOverlay } from "./components/OperationLogOverlay";
+import type { LogEntry } from "./components/OperationLogOverlay";
+import type { CriticalObject } from "./types";
 
 export interface HighlightLocation {
   lat: number;
@@ -12,6 +15,16 @@ export interface HighlightLocation {
 export default function App() {
   const [currentView, setCurrentView] = useState<"map" | "documents">("map");
   const [highlightLocation, setHighlightLocation] = useState<HighlightLocation | null>(null);
+
+  // --- Stan logu operacyjnego (persists across views) ---
+  const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
+  const [criticalObjects, setCriticalObjects] = useState<Record<string, CriticalObject>>({});
+
+  const pushLog = (entry: Omit<LogEntry, "id" | "time">) => {
+    const now = new Date();
+    const time = now.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    setLogEntries(prev => [...prev, { ...entry, id: `${Date.now()}-${Math.random()}`, time }]);
+  };
 
   const handleShowOnMap = (loc: HighlightLocation) => {
     setHighlightLocation(loc);
@@ -58,9 +71,31 @@ export default function App() {
 
       <main style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
         {currentView === "map"
-          ? <MapContainer highlightLocation={highlightLocation} onHighlightConsumed={() => setHighlightLocation(null)} />
-          : <DocumentsContainer onShowOnMap={handleShowOnMap} />}
+          ? <MapContainer
+              highlightLocation={highlightLocation}
+              onHighlightConsumed={() => setHighlightLocation(null)}
+              logEntries={logEntries}
+              pushLog={pushLog}
+              criticalObjects={criticalObjects}
+              onCriticalObjectsLoaded={setCriticalObjects}
+              onClearLog={() => setLogEntries([])}
+            />
+          : <DocumentsContainer
+              onShowOnMap={handleShowOnMap}
+              logEntries={logEntries}
+              criticalObjects={criticalObjects}
+              onClearLog={() => setLogEntries([])}
+            />}
       </main>
+
+      {/* Operation Log — pływające okno, tylko na widoku mapy */}
+      {currentView === "map" && (
+        <OperationLogOverlay
+          entries={logEntries}
+          criticalObjects={criticalObjects}
+          onClear={() => setLogEntries([])}
+        />
+      )}
     </div>
   );
 }

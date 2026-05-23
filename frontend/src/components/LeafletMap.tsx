@@ -1,11 +1,13 @@
 import { useRef, useEffect } from "react";
 import L from "leaflet";
 import "leaflet.markercluster";
-import type { Unit, InfrastructureElement, InfraCategory, DependencyGraph } from "../types";
+import type { Unit, InfrastructureElement, InfraCategory, DependencyGraph, CriticalObject, ImpactResult } from "../types";
 import type { HighlightLocation } from "../App";
 import { createInfraIcon, createInfraPopup } from "./InfrastructureMarker";
 import { INFRA_CONFIG } from "../utils/infraConfig";
 import { initDependencyLayer, type DependencyLayerHandle } from "./DependencyLayer";
+import { getBearing, THREAT_STYLE, SEVERITY_COLOR } from "../utils/attackCorridors";
+import type { DynamicCorridor } from "../utils/attackCorridors";
 
 const STALOWA_WOLA: L.LatLngExpression = [50.56211528577714, 22.066128447186205];
 const INITIAL_ZOOM = 14;
@@ -28,24 +30,25 @@ const STATUS_COLORS: Record<Unit["status"], string> = {
   sos: "#ef4444",
 };
 
-const ROLE_EMOJI: Record<Unit["role"], string> = {
-  recon:    "🔭",
-  medic:    "🏥",
-  engineer: "🔧",
-  command:  "🎯",
-  drone:    "🚁",
+const ROLE_LABEL: Record<Unit["role"], string> = {
+  recon: "RCN",
+  medic: "MED",
+  engineer: "ENG",
+  command: "CMD",
+  drone: "UAV",
 };
 
 function createIcon(unit: Unit, isSelected: boolean): L.DivIcon {
-  const color   = STATUS_COLORS[unit.status];
-  const emoji   = ROLE_EMOJI[unit.role];
-  const size    = isSelected ? 40 : 32;
-  const border  = isSelected ? "3px solid white" : `2px solid ${color}`;
+  const color = STATUS_COLORS[unit.status];
+  const label = ROLE_LABEL[unit.role];
+  const size = isSelected ? 40 : 32;
+  const border = isSelected ? "3px solid white" : `2px solid ${color}`;
   const isDrone = unit.role === "drone";
+  const fs = Math.round(size * 0.27);
 
   return L.divIcon({
     className: "",
-    iconSize:   [size, size],
+    iconSize: [size, size],
     iconAnchor: [size / 2, size / 2],
     html: `
       <div style="
@@ -54,17 +57,25 @@ function createIcon(unit: Unit, isSelected: boolean): L.DivIcon {
         ${unit.status === "sos" ? "animation:pulse 1s infinite;" : ""}
       ">
         <div style="
-          width:${isDrone ? size * 0.75 : size}px;
-          height:${isDrone ? size * 0.75 : size}px;
-          background:${color}20;
+          width:${isDrone ? size * 0.78 : size}px;
+          height:${isDrone ? size * 0.78 : size}px;
+          background:${color}22;
           border:${border};
           border-radius:${isDrone ? "4px" : "50%"};
           transform:${isDrone ? "rotate(45deg)" : "none"};
           display:flex;align-items:center;justify-content:center;
-          font-size:${size * 0.45}px;
           cursor:pointer;
         ">
-          <span style="display:block;${isDrone ? "transform:rotate(-45deg);" : ""}">${emoji}</span>
+          <span style="
+            display:block;
+            font-family:'Courier New',monospace;
+            font-weight:700;
+            font-size:${fs}px;
+            letter-spacing:0.05em;
+            color:${color};
+            line-height:1;
+            ${isDrone ? "transform:rotate(-45deg);" : ""}
+          ">${label}</span>
         </div>
       </div>
       <style>
@@ -79,22 +90,148 @@ function createIcon(unit: Unit, isSelected: boolean): L.DivIcon {
 
 function createPopupContent(unit: Unit): string {
   return `
-    <div style="color: #0f172a; min-width: 150px;">
-      <h3 style="margin: 0 0 8px; font-size: 14px;">
-        ${ROLE_EMOJI[unit.role]} ${unit.name}
-      </h3>
-      <p style="margin: 4px 0; font-size: 12px;">
-        Status:
-        <span style="color: ${STATUS_COLORS[unit.status]}; font-weight: 700;">
-          ${unit.status.toUpperCase()}
-        </span>
+    <div style="color:#0f172a;min-width:150px;font-family:system-ui,sans-serif">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="
+          font-family:'Courier New',monospace;font-weight:700;font-size:11px;
+          letter-spacing:0.08em;color:${STATUS_COLORS[unit.status]};
+          background:${STATUS_COLORS[unit.status]}18;border:1px solid ${STATUS_COLORS[unit.status]}44;
+          border-radius:3px;padding:1px 5px;
+        ">${ROLE_LABEL[unit.role]}</span>
+        <span style="font-weight:700;font-size:13px">${unit.name}</span>
+      </div>
+      <p style="margin:3px 0;font-size:12px">
+        Status: <span style="color:${STATUS_COLORS[unit.status]};font-weight:700">${unit.status.toUpperCase()}</span>
       </p>
-      <p style="margin: 4px 0; font-size: 12px;">Rola: ${unit.role}</p>
-      <p style="margin: 4px 0; font-size: 12px; color: #64748b;">
-        ${unit.lat.toFixed(5)}, ${unit.lng.toFixed(5)}
-      </p>
+      <p style="margin:3px 0;font-size:11px;color:#64748b">${unit.lat.toFixed(5)}, ${unit.lng.toFixed(5)}</p>
     </div>
   `;
+}
+
+const CRITICAL_TYPE: Record<string, { color: string; icon: string }> = {
+  energy: { color: "#facc15", icon: `<path d="M10 2H6L4 9h4L5.5 14H10L13 7H9z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>` },
+  water: { color: "#38bdf8", icon: `<path d="M8 2C7 4 3 8 3 11a5 5 0 0010 0C13 8 9 4 8 2z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>` },
+  medical: { color: "#f87171", icon: `<path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>` },
+  transport: { color: "#a78bfa", icon: `<line x1="5" y1="1" x2="5" y2="15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="11" y1="1" x2="11" y2="15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="3" y1="5" x2="13" y2="5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><line x1="3" y1="10" x2="13" y2="10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>` },
+  industrial: { color: "#94a3b8", icon: `<path d="M2 14h12M2 14V9h4M6 9l3.5-3v3l3.5-3V9H14v5M5 6V4M11 5V3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>` },
+  law_enforcement: { color: "#818cf8", icon: `<path d="M8 2L3 4v5c0 3 2.5 5 5 6 2.5-1 5-3 5-6V4z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>` },
+  fire: { color: "#ef4444", icon: `<path d="M8 14C5 14 3 12 3 9.5 3 7.5 4.5 6 5 4.5c.5 1.5 1 2 2 1.5C6.5 4.5 7 3 9 1c0 2.5 1 3.5 2 4.5.5-1 .5-2 1-2.5 1 2 1 3 1 5C13 12 11 14 8 14z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>` },
+  government: { color: "#34d399", icon: `<path d="M2 14h12M3 14V9h10v5M6 9V7M10 9V7M3 7h10M8 3L3 7M8 3L13 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>` },
+  communications: { color: "#22d3ee", icon: `<path d="M8 14V9M4 7a4 4 0 0 0 8 0M2 5a6 6 0 0 0 12 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="8" cy="9" r="1" fill="currentColor"/>` },
+};
+
+type ImpactStatus = "normal" | "attacked" | "immediate" | "cascade_4h" | "cascade_8h";
+
+const IMPACT_COLOR: Record<ImpactStatus, string | null> = {
+  normal: null,
+  attacked: "#ff0000",
+  immediate: "#ef4444",
+  cascade_4h: "#f97316",
+  cascade_8h: "#eab308",
+};
+
+function createCriticalIcon(obj: CriticalObject, _objectId: string, status: ImpactStatus): L.DivIcon {
+  const cfg = CRITICAL_TYPE[obj.type] ?? { color: "#64748b", icon: `<circle cx="8" cy="7" r="3.5" stroke="currentColor" stroke-width="1.5"/><line x1="8" y1="10.5" x2="8" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>` };
+  const fill = IMPACT_COLOR[status] ?? cfg.color;
+  const size = status === "attacked" ? 38 : 30;
+  const pulse = status === "attacked" || status === "immediate";
+  const inner = Math.round(size * 0.55);
+
+  return L.divIcon({
+    className: "",
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+    html: `
+      <div style="
+        width:${size}px;height:${size}px;
+        background:${fill}28;
+        border:2px solid ${fill};
+        border-radius:6px;
+        display:flex;align-items:center;justify-content:center;
+        cursor:pointer;
+        box-shadow:0 0 ${pulse ? 8 : 3}px ${fill}88;
+        ${pulse ? "animation:critpulse 1s ease-in-out infinite;" : ""}
+        position:relative;
+        color:${fill};
+        padding:${Math.round(size * 0.12)}px;
+        box-sizing:border-box;
+      ">
+        <svg viewBox="0 0 16 16" fill="none" style="width:${inner}px;height:${inner}px">${cfg.icon}</svg>
+        <div style="
+          position:absolute;top:-5px;right:-5px;
+          background:${fill};
+          border-radius:50%;
+          width:${obj.criticality * 3}px;height:${obj.criticality * 3}px;
+          min-width:9px;min-height:9px;
+          opacity:0.9;
+        "></div>
+      </div>
+      <style>
+        @keyframes critpulse{0%,100%{box-shadow:0 0 6px ${fill}88}50%{box-shadow:0 0 16px ${fill}ff}}
+      </style>`,
+    tooltipAnchor: [0, -size / 2 - 4],
+  });
+}
+
+const THREAT_OPTIONS = [
+  { value: "drone",    label: "Dron/UAV" },
+  { value: "missile",  label: "Rakieta" },
+  { value: "sabotage", label: "Sabotaż" },
+  { value: "cyber",    label: "Cyber" },
+  { value: "chemical", label: "Chemiczny" },
+];
+
+function createCriticalPopup(objectId: string, obj: CriticalObject, loadingId: string | null): string {
+  const cfg = CRITICAL_TYPE[obj.type] ?? { color: "#64748b", icon: `<circle cx="8" cy="7" r="3.5" stroke="currentColor" stroke-width="1.5"/><line x1="8" y1="10.5" x2="8" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>` };
+  const vulns = obj.vulnerability.join(", ");
+  const defense = (obj.defense ?? []).join(", ") || "brak danych";
+  const isLoading = loadingId === objectId;
+  const defaultThreat = obj.vulnerability[0] || "drone";
+
+  const threatOptions = THREAT_OPTIONS.map(t =>
+    `<option value="${t.value}"${t.value === defaultThreat ? " selected" : ""}>${t.label}</option>`
+  ).join("");
+
+  return `
+    <div style="font-family:system-ui,sans-serif;color:#0f172a;min-width:210px;max-width:250px">
+      <div style="background:${cfg.color}18;border-left:3px solid ${cfg.color};padding:6px 10px;margin-bottom:8px;border-radius:0 4px 4px 0;display:flex;align-items:center;gap:8px">
+        <span style="width:16px;height:16px;flex-shrink:0;color:${cfg.color}">
+          <svg viewBox="0 0 16 16" fill="none" style="width:100%;height:100%">${cfg.icon}</svg>
+        </span>
+        <div>
+          <div style="font-weight:700;font-size:13px">${obj.name}</div>
+          <div style="font-size:11px;color:#475569;margin-top:1px">Krytyczność: ${"★".repeat(obj.criticality)}${"☆".repeat(5 - obj.criticality)}</div>
+        </div>
+      </div>
+      <table style="border-collapse:collapse;width:100%;font-size:11px;margin-bottom:8px">
+        <tr><td style="color:#64748b;padding:2px 6px 2px 0;white-space:nowrap">Zapas zasilania</td><td>${obj.backup_power_hours}h</td></tr>
+        <tr><td style="color:#64748b;padding:2px 6px 2px 0">Podatności</td><td style="color:#fca5a5">${vulns}</td></tr>
+        <tr><td style="color:#64748b;padding:2px 6px 2px 0">Ochrona</td><td style="color:#28a355">${defense}</td></tr>
+      </table>
+      <select
+        class="threat-type-select"
+        style="
+          width:100%;margin-bottom:6px;padding:5px 6px;
+          background:#1e293b;color:#e2e8f0;
+          border:1px solid #475569;border-radius:4px;
+          font-family:system-ui,sans-serif;font-size:11px;
+          cursor:pointer;
+        "
+      >${threatOptions}</select>
+      <button
+        class="simulate-attack-btn"
+        data-object-id="${objectId}"
+        style="
+          width:100%;padding:7px;
+          background:${isLoading ? "#6b2121" : "#7f1d1d"};
+          color:${isLoading ? "#fca5a5" : "#fecaca"};
+          border:1px solid #ef444488;border-radius:4px;
+          cursor:${isLoading ? "not-allowed" : "pointer"};
+          font-family:'Courier New',monospace;font-size:11px;font-weight:700;
+          letter-spacing:0.1em;
+        "
+      >${isLoading ? "[ SYMULACJA... ]" : "[ SYMULUJ ATAK ]"}</button>
+    </div>`;
 }
 
 interface Props {
@@ -115,9 +252,16 @@ interface Props {
   customPoints?: import("../types").CustomPoint[];
   highlightLocation?: HighlightLocation | null;
   onHighlightConsumed?: () => void;
+  // --- Nowe ---
+  criticalObjects?: Record<string, CriticalObject>;
+  impactResult?: ImpactResult | null;
+  loadingScenarioId?: string | null;
+  showCorridors?: boolean;
+  dynamicCorridors?: DynamicCorridor[];
+  onSimulateAttack?: (objectId: string, threatType: string) => void;
 }
 
-export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOnline, infraItems, showInfra, activeCategories, dependencyGraph, showDeps, mapStyle = "sentinel", isAddingMode, onMapClick, onDeletePoint, customPoints = [], highlightLocation, onHighlightConsumed }: Props) {
+export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOnline, infraItems, showInfra, activeCategories, dependencyGraph, showDeps, mapStyle = "sentinel", isAddingMode, onMapClick, onDeletePoint, customPoints = [], highlightLocation, onHighlightConsumed, criticalObjects = {}, impactResult, loadingScenarioId, showCorridors = false, dynamicCorridors = [], onSimulateAttack }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
@@ -131,6 +275,8 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
   const clickHandlerRef = useRef<((e: L.LeafletMouseEvent) => void) | null>(null);
   const customMarkersRef = useRef<L.LayerGroup | null>(null);
   const highlightMarkerRef = useRef<L.Marker | null>(null);
+  const criticalMarkersRef = useRef<Map<string, L.Marker>>(new Map());
+  const corridorsLayerRef = useRef<L.LayerGroup | null>(null);
 
   // EFFECT 1: Inicjalizacja mapy + cluster groups
   useEffect(() => {
@@ -189,6 +335,8 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
       clusterGroups.clear();
       depLayerRef.current?.destroy();
       depLayerRef.current = null;
+      criticalMarkersRef.current.clear();
+      corridorsLayerRef.current = null;
     };
   }, []);
 
@@ -510,75 +658,300 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
     }
   }, [customPoints, onDeletePoint]);
 
-  // EFFECT 10: Highlight location from RAG (flyTo + pulsing marker)
+  // EFFECT 10: Highlight location from search / RAG (flyTo + open popup)
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !highlightLocation) return;
 
     const { lat, lon, name, category } = highlightLocation;
 
-    // Remove previous highlight
+    // Remove previous temporary highlight marker
     if (highlightMarkerRef.current) {
       map.removeLayer(highlightMarkerRef.current);
       highlightMarkerRef.current = null;
     }
 
-    const catEmoji: Record<string, string> = {
-      bridge: "🌉", hospital: "🏥", fire_station: "🚒", police: "🚔",
-      power_plant: "⚡", substation: "⚡", water_works: "💧",
-      pumping_station: "💧", water_tower: "💧", building: "🏛️", industrial: "🏭",
-    };
-    const emoji = category ? (catEmoji[category] ?? "📍") : "📍";
-
-    const icon = L.divIcon({
-      className: "",
-      iconSize: [48, 48],
-      iconAnchor: [24, 24],
-      html: `
-        <style>
-          @keyframes rag-ring {
-            0%   { transform: scale(0.6); opacity: 1; }
-            100% { transform: scale(2.2); opacity: 0; }
-          }
-          @keyframes rag-bob {
-            0%,100% { transform: translateY(0); }
-            50%     { transform: translateY(-5px); }
-          }
-        </style>
-        <div style="position:relative;width:48px;height:48px;">
-          <div style="position:absolute;inset:0;border-radius:50%;border:3px solid #f59e0b;animation:rag-ring 1.4s ease-out infinite;"></div>
-          <div style="position:absolute;inset:0;border-radius:50%;border:3px solid #f59e0b;animation:rag-ring 1.4s ease-out infinite;animation-delay:0.5s;"></div>
-          <div style="
-            position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
-            width:32px;height:32px;border-radius:50%;
-            background:#0f172a;border:2.5px solid #f59e0b;
-            display:flex;align-items:center;justify-content:center;
-            font-size:16px;animation:rag-bob 2s ease-in-out infinite;
-            box-shadow:0 0 12px #f59e0b88;
-          ">${emoji}</div>
-        </div>`,
-    });
-
-    const marker = L.marker([lat, lon], { icon, zIndexOffset: 1000 });
-    marker.bindPopup(
-      `<div style="font-family:system-ui,sans-serif;color:#0f172a;min-width:160px">
-        <strong style="color:#d97706">${emoji} ${name}</strong><br/>
-        <span style="font-size:11px;color:#64748b">${category ? category.replace(/_/g, " ") : ""}</span><br/>
-        <span style="font-size:10px;color:#94a3b8">${lat.toFixed(5)}°N, ${lon.toFixed(5)}°E</span>
-      </div>`,
-      { autoClose: false, closeOnClick: true }
-    );
-
-    marker.addTo(map);
-    marker.openPopup();
-    highlightMarkerRef.current = marker;
-
+    // -- Fly first, then open popup once settled --
     map.flyTo([lat, lon], Math.max(map.getZoom(), 16), { animate: true, duration: 1.2 });
+
+    map.once("moveend", () => {
+      // 1. Try to find & open an existing critical-infrastructure marker
+      const criticalMarkers = criticalMarkersRef.current;
+      for (const [, marker] of criticalMarkers) {
+        const pos = marker.getLatLng();
+        const dist = Math.abs(pos.lat - lat) + Math.abs(pos.lng - lon);
+        if (dist < 0.0005) {
+          marker.openPopup();
+          return; // done — use the rich popup with simulate button
+        }
+      }
+
+      // 2. Fallback: generic pulsing marker (for OSM infra / units)
+      const catEmoji: Record<string, string> = {
+        bridge: "🌉", hospital: "🏥", fire_station: "🚒", police: "🚔",
+        power_plant: "⚡", substation: "⚡", water_works: "💧",
+        pumping_station: "💧", water_tower: "💧", building: "🏛️", industrial: "🏭",
+      };
+      const emoji = category ? (catEmoji[category] ?? "📍") : "📍";
+
+      const icon = L.divIcon({
+        className: "",
+        iconSize: [48, 48],
+        iconAnchor: [24, 24],
+        html: `
+          <style>
+            @keyframes rag-ring {
+              0%   { transform: scale(0.6); opacity: 1; }
+              100% { transform: scale(2.2); opacity: 0; }
+            }
+            @keyframes rag-bob {
+              0%,100% { transform: translateY(0); }
+              50%     { transform: translateY(-5px); }
+            }
+          </style>
+          <div style="position:relative;width:48px;height:48px;">
+            <div style="position:absolute;inset:0;border-radius:50%;border:3px solid #f59e0b;animation:rag-ring 1.4s ease-out infinite;"></div>
+            <div style="position:absolute;inset:0;border-radius:50%;border:3px solid #f59e0b;animation:rag-ring 1.4s ease-out infinite;animation-delay:0.5s;"></div>
+            <div style="
+              position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+              width:32px;height:32px;border-radius:50%;
+              background:#0f172a;border:2.5px solid #f59e0b;
+              display:flex;align-items:center;justify-content:center;
+              font-size:16px;animation:rag-bob 2s ease-in-out infinite;
+              box-shadow:0 0 12px #f59e0b88;
+            ">${emoji}</div>
+          </div>`,
+      });
+
+      const marker = L.marker([lat, lon], { icon, zIndexOffset: 1000 });
+      marker.bindPopup(
+        `<div style="font-family:system-ui,sans-serif;color:#0f172a;min-width:160px">
+          <strong style="color:#d97706">${emoji} ${name}</strong><br/>
+          <span style="font-size:11px;color:#64748b">${category ? category.replace(/_/g, " ") : ""}</span><br/>
+          <span style="font-size:10px;color:#94a3b8">${lat.toFixed(5)}°N, ${lon.toFixed(5)}°E</span>
+        </div>`,
+        { autoClose: false, closeOnClick: true }
+      );
+
+      marker.addTo(map);
+      marker.openPopup();
+      highlightMarkerRef.current = marker;
+    });
 
     // Clear the state after consuming so it doesn't re-trigger on unrelated re-renders
     onHighlightConsumed?.();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlightLocation]);
+
+  // EFFECT 11: Markery infrastruktury krytycznej (named graf)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const currentMarkers = criticalMarkersRef.current;
+    const incomingIds = new Set(Object.keys(criticalObjects));
+
+    // Usuń markery których już nie ma
+    for (const [id, marker] of currentMarkers) {
+      if (!incomingIds.has(id)) {
+        map.removeLayer(marker);
+        currentMarkers.delete(id);
+      }
+    }
+
+    for (const [objectId, obj] of Object.entries(criticalObjects)) {
+      const existing = currentMarkers.get(objectId);
+      const status: ImpactStatus = "normal";
+
+      if (existing) {
+        // Odśwież popup przy zmianie loadingScenarioId
+        const popup = existing.getPopup();
+        if (popup) popup.setContent(createCriticalPopup(objectId, obj, loadingScenarioId ?? null));
+      } else {
+        const marker = L.marker([obj.lat, obj.lng], {
+          icon: createCriticalIcon(obj, objectId, status),
+          zIndexOffset: 500,
+        });
+
+        marker.bindPopup(createCriticalPopup(objectId, obj, null), { maxWidth: 260 });
+        marker.bindTooltip(`${obj.name} (kryt. ${obj.criticality}/5)`, { direction: "top", offset: [0, -18] });
+
+        marker.on("popupopen", (e) => {
+          const btn = e.popup.getElement()?.querySelector(".simulate-attack-btn");
+          if (btn && onSimulateAttack) {
+            btn.addEventListener("click", () => {
+              const select = e.popup.getElement()?.querySelector(".threat-type-select") as HTMLSelectElement | null;
+              const threatType = select?.value || "drone";
+              onSimulateAttack(objectId, threatType);
+              marker.closePopup();
+            });
+          }
+        });
+
+        marker.addTo(map);
+        currentMarkers.set(objectId, marker);
+      }
+    }
+    // loadingScenarioId intentionally included so popup refreshes during loading
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [criticalObjects, loadingScenarioId, onSimulateAttack]);
+
+  // EFFECT 12: Nakładka impact — koloruje markery krytyczne wg wyniku symulacji
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const markers = criticalMarkersRef.current;
+
+    // Resetuj wszystkie do "normal"
+    for (const [id, marker] of markers) {
+      const obj = criticalObjects[id];
+      if (obj) marker.setIcon(createCriticalIcon(obj, id, "normal"));
+    }
+
+    if (!impactResult) return;
+
+    const paint = (ids: string[], status: ImpactStatus) => {
+      for (const id of ids) {
+        const marker = markers.get(id);
+        const obj = criticalObjects[id];
+        if (marker && obj) marker.setIcon(createCriticalIcon(obj, id, status));
+      }
+    };
+
+    const attackedMarker = markers.get(impactResult.attacked_id);
+    const attackedObj = criticalObjects[impactResult.attacked_id];
+    if (attackedMarker && attackedObj) {
+      attackedMarker.setIcon(createCriticalIcon(attackedObj, impactResult.attacked_id, "attacked"));
+    }
+
+    paint(impactResult.immediate, "immediate");
+    paint(impactResult.cascade_4h, "cascade_4h");
+    paint(impactResult.cascade_8h, "cascade_8h");
+  }, [impactResult, criticalObjects]);
+
+  // EFFECT 13: Dynamic attack corridors — tied to simulations
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (corridorsLayerRef.current) {
+      map.removeLayer(corridorsLayerRef.current);
+      corridorsLayerRef.current = null;
+    }
+
+    if (!showCorridors || !dynamicCorridors.length) return;
+
+    const layer = L.layerGroup();
+
+    for (const corridor of dynamicCorridors) {
+      const style  = THREAT_STYLE[corridor.threatType] ?? THREAT_STYLE.drone;
+      const sevCol = SEVERITY_COLOR[corridor.severity] ?? style.color;
+      const isActive = corridor.active;
+      const lineCol  = isActive ? style.color : style.color;
+
+      // ── Polyline ──
+      L.polyline(corridor.coords, {
+        color:     lineCol,
+        weight:    isActive ? style.weight - 0.5 : style.weight,
+        opacity:   isActive ? 0.50 : 0.80,
+        dashArray: isActive ? "4 8" : style.dash,
+      }).addTo(layer);
+
+      // ── Bearing arrows (completed only) ──
+      if (!isActive) {
+        for (let i = 0; i < corridor.coords.length - 1; i++) {
+          const p1 = corridor.coords[i];
+          const p2 = corridor.coords[i + 1];
+          const mid: [number, number] = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
+          const bearing = getBearing(p1, p2);
+          L.marker(mid, {
+            icon: L.divIcon({
+              className: "",
+              iconSize: [14, 14],
+              iconAnchor: [7, 7],
+              html: `<div style="
+                width:0;height:0;
+                border-left:5px solid transparent;
+                border-right:5px solid transparent;
+                border-bottom:10px solid ${lineCol};
+                transform:rotate(${bearing}deg);
+                transform-origin:50% 65%;
+                opacity:0.9;
+              "></div>`,
+            }),
+            interactive: false,
+          }).addTo(layer);
+        }
+      }
+
+      // ── Origin label ──
+      const origin = corridor.coords[0];
+      L.marker(origin, {
+        icon: L.divIcon({
+          className: "",
+          iconAnchor: [-2, 8],
+          html: `<div style="
+            background:rgba(15,23,42,0.88);
+            border:1px solid ${style.color}77;
+            border-radius:4px;
+            padding:2px 7px;
+            font-size:9px;
+            color:${style.color};
+            white-space:nowrap;
+            pointer-events:none;
+            font-family:system-ui,sans-serif;
+            opacity:${isActive ? 0.7 : 1};
+          ">${style.icon} ${style.label}</div>`,
+        }),
+        interactive: false,
+      }).addTo(layer);
+
+      // ── Target endpoint ──
+      const target = corridor.coords[corridor.coords.length - 1];
+      if (isActive) {
+        // Pulsing ring while simulation runs
+        L.marker(target, {
+          icon: L.divIcon({
+            className: "",
+            iconSize: [22, 22],
+            iconAnchor: [11, 11],
+            html: `
+              <style>@keyframes corr-pulse{0%,100%{transform:scale(1);opacity:0.9}50%{transform:scale(1.45);opacity:0.4}}</style>
+              <div style="
+                width:22px;height:22px;
+                border-radius:50%;
+                border:2px solid ${style.color};
+                animation:corr-pulse 0.9s ease-in-out infinite;
+              "></div>`,
+          }),
+          interactive: false,
+        }).addTo(layer);
+      } else {
+        // Impact ring colored by severity
+        L.marker(target, {
+          icon: L.divIcon({
+            className: "",
+            iconSize: [28, 28],
+            iconAnchor: [14, 14],
+            html: `<div style="
+              width:28px;height:28px;
+              border-radius:50%;
+              border:2.5px solid ${sevCol};
+              background:${sevCol}22;
+              display:flex;align-items:center;justify-content:center;
+              font-size:11px;
+              box-shadow:0 0 10px ${sevCol}55;
+            ">🎯</div>`,
+          }),
+          interactive: false,
+        }).addTo(layer);
+      }
+    }
+
+    layer.addTo(map);
+    corridorsLayerRef.current = layer;
+  }, [dynamicCorridors, showCorridors]);
 
   return <div ref={containerRef} style={{ height: "100%", width: "100%", outline: "none" }} />;
 }

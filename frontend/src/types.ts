@@ -119,3 +119,45 @@ export interface CustomPoint {
   name:        string;
   description: string;
 }
+
+// ---------------------------------------------------------------------------
+// Infrastruktura krytyczna (named graf)
+// ---------------------------------------------------------------------------
+export interface CriticalObject {
+  name:               string;
+  type:               string;
+  lat:                number;
+  lng:                number;
+  criticality:        number;
+  backup_power_hours: number;
+  powers:             string[];
+  dependencies:       string[];
+  vulnerability:      string[];
+  defense:            string[];
+}
+
+export interface ImpactResult {
+  attacked_id:       string;
+  attacked_name:     string;
+  attacked_type:     string;
+  immediate:         string[];
+  cascade_4h:        string[];
+  cascade_8h:        string[];
+  cascade_t3:        string[];   // backup > 8h — tracą zasilanie, ale przeżyją
+  severity:          "KATASTROFALNY" | "KRYTYCZNY" | "POWAŻNY" | "UMIARKOWANY";
+  total_affected:    number;
+  critical_affected: number;
+}
+
+export interface ThreatScenarioResult {
+  object_id:       string;
+  object_name:     string;
+  threat_type:     string;
+  impact:          ImpactResult;
+  scenario:        string;
+  recommendations: string[];
+  order:           string;
+  raw_response:    string;
+  rag_chunks_used: number;
+  rag_sources:     string[];
+}

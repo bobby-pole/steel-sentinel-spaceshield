@@ -4,8 +4,9 @@ import re
 import random
 import math
 import json
+from collections import deque
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, BackgroundTasks, File
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,7 +26,7 @@ if os.path.isdir(TILES_DIR):
     app.mount("/tiles", StaticFiles(directory=TILES_DIR), name="tiles")
 
 # Serwuj pliki danych bezpośrednio z backendu — nie trzeba ręcznie kopiować do frontend/public
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 @app.get("/dependencies.json")
 async def get_dependencies():
@@ -52,6 +53,265 @@ UNITS: list[Unit] = [
     {"id": "delta",   "name": "Dron Delta",           "lat": STALOWA_WOLA[0] + 0.02,  "lng": STALOWA_WOLA[1],         "status": "active", "role": "drone"},
     {"id": "command", "name": "Punkt Dowodzenia",     "lat": STALOWA_WOLA[0],         "lng": STALOWA_WOLA[1],         "status": "active", "role": "command"},
 ]
+
+# ---------------------------------------------------------------------------
+# Graf infrastruktury krytycznej Stalowej Woli
+# ---------------------------------------------------------------------------
+INFRASTRUCTURE: dict[str, dict] = {
+    "elektrownia_poludnie": {
+        "name": "Elektrociepłownia Południe",
+        "type": "energy",
+        "lat": 50.5742, "lng": 22.0412,
+        "criticality": 5, "backup_power_hours": 0,
+        "powers": ["szpital_powiatowy", "wodociagi_stacja", "hsw_zaklad", "urzad_miasta", "ratusz", "pompownia_centralna", "stacja_transf_polnoc"],
+        "dependencies": [],
+        "vulnerability": ["drone", "missile", "sabotage"],
+        "defense": ["ochrona_fizyczna", "ogrodzenie_perymetryczne", "monitoring_cctv"],
+    },
+    "stacja_transf_polnoc": {
+        "name": "GPZ Stalowa Wola Północ",
+        "type": "energy",
+        "lat": 50.5903, "lng": 22.0648,
+        "criticality": 4, "backup_power_hours": 0,
+        "powers": ["komenda_policji", "straz_pozarna", "centrum_zarzadzania", "dworzec_pkp", "linia_telekomunikacyjna"],
+        "dependencies": ["elektrownia_poludnie"],
+        "vulnerability": ["drone", "cyber", "sabotage"],
+        "defense": ["ogrodzenie", "monitoring_cctv"],
+    },
+    "szpital_powiatowy": {
+        "name": "Szpital Powiatowy im. S. Staszica",
+        "type": "medical",
+        "lat": 50.5830, "lng": 22.0523,
+        "criticality": 5, "backup_power_hours": 8,
+        "powers": [],
+        "dependencies": ["elektrownia_poludnie", "wodociagi_stacja"],
+        "vulnerability": ["drone", "cyber"],
+        "defense": ["agregat_8h", "monitoring_cctv", "ochrona_fizyczna"],
+    },
+    "hsw_zaklad": {
+        "name": "Huta Stalowa Wola S.A.",
+        "type": "industrial",
+        "lat": 50.5752, "lng": 22.0781,
+        "criticality": 5, "backup_power_hours": 0,
+        "powers": [],
+        "dependencies": ["elektrownia_poludnie"],
+        "vulnerability": ["missile", "drone", "sabotage"],
+        "defense": ["ochrona_wojskowa", "ogrodzenie_perymetryczne", "monitoring_cctv", "brama_kontrolna"],
+    },
+    "wodociagi_stacja": {
+        "name": "Stacja Uzdatniania Wody",
+        "type": "water",
+        "lat": 50.5698, "lng": 22.0620,
+        "criticality": 5, "backup_power_hours": 4,
+        "powers": ["szpital_powiatowy", "straz_pozarna", "pompownia_centralna"],
+        "dependencies": ["elektrownia_poludnie"],
+        "vulnerability": ["drone", "chemical", "sabotage"],
+        "defense": ["ogrodzenie", "monitoring_chemiczny", "agregat_4h"],
+    },
+    "pompownia_centralna": {
+        "name": "Przepompownia Wody Centralna",
+        "type": "water",
+        "lat": 50.5675, "lng": 22.0698,
+        "criticality": 3, "backup_power_hours": 2,
+        "powers": ["wiezyczka_cisnienia"],
+        "dependencies": ["elektrownia_poludnie", "wodociagi_stacja"],
+        "vulnerability": ["drone", "sabotage"],
+        "defense": ["ogrodzenie", "monitoring_automatyczny"],
+    },
+    "most_san_glowny": {
+        "name": "Most im. J. Piłsudskiego nad Sanem",
+        "type": "transport",
+        "lat": 50.5955, "lng": 22.1140,
+        "criticality": 5, "backup_power_hours": 0,
+        "powers": [],
+        "dependencies": [],
+        "vulnerability": ["missile", "drone"],
+        "defense": ["patrol_wojskowy", "monitoring_cctv"],
+    },
+    "most_san_polnoc": {
+        "name": "Most Północny nad Sanem",
+        "type": "transport",
+        "lat": 50.6085, "lng": 22.1026,
+        "criticality": 4, "backup_power_hours": 0,
+        "powers": [],
+        "dependencies": [],
+        "vulnerability": ["missile", "drone"],
+        "defense": ["patrol_drogowy"],
+    },
+    "dworzec_pkp": {
+        "name": "Stacja PKP Stalowa Wola-Centrum",
+        "type": "transport",
+        "lat": 50.5817, "lng": 22.0831,
+        "criticality": 3, "backup_power_hours": 0,
+        "powers": [],
+        "dependencies": ["stacja_transf_polnoc"],
+        "vulnerability": ["missile", "drone", "sabotage"],
+        "defense": ["monitoring_cctv", "ochrona_fizyczna"],
+    },
+    "komenda_policji": {
+        "name": "Komenda Powiatowa Policji",
+        "type": "law_enforcement",
+        "lat": 50.5782, "lng": 22.0543,
+        "criticality": 3, "backup_power_hours": 4,
+        "powers": [],
+        "dependencies": ["stacja_transf_polnoc"],
+        "vulnerability": ["drone", "cyber"],
+        "defense": ["ochrona_fizyczna", "monitoring_cctv", "agregat_4h", "uzbrojona_ochrona"],
+    },
+    "straz_pozarna": {
+        "name": "Komenda Powiatowa PSP",
+        "type": "fire",
+        "lat": 50.5720, "lng": 22.0592,
+        "criticality": 4, "backup_power_hours": 8,
+        "powers": [],
+        "dependencies": ["stacja_transf_polnoc", "wodociagi_stacja"],
+        "vulnerability": ["drone", "missile"],
+        "defense": ["ochrona_fizyczna", "agregat_8h", "monitoring_cctv"],
+    },
+    "urzad_miasta": {
+        "name": "Urząd Miasta Stalowej Woli",
+        "type": "government",
+        "lat": 50.5720, "lng": 22.0499,
+        "criticality": 3, "backup_power_hours": 2,
+        "powers": [],
+        "dependencies": ["elektrownia_poludnie"],
+        "vulnerability": ["cyber", "drone"],
+        "defense": ["monitoring_cctv", "ochrona_fizyczna"],
+    },
+    "ratusz": {
+        "name": "Ratusz — Siedziba Władz Powiatu",
+        "type": "government",
+        "lat": 50.5728, "lng": 22.0481,
+        "criticality": 3, "backup_power_hours": 2,
+        "powers": [],
+        "dependencies": ["elektrownia_poludnie"],
+        "vulnerability": ["cyber", "drone", "sabotage"],
+        "defense": ["monitoring_cctv", "ochrona_fizyczna"],
+    },
+    "centrum_zarzadzania": {
+        "name": "Centrum Zarządzania Kryzysowego",
+        "type": "government",
+        "lat": 50.5748, "lng": 22.0511,
+        "criticality": 5, "backup_power_hours": 24,
+        "powers": [],
+        "dependencies": ["stacja_transf_polnoc"],
+        "vulnerability": ["cyber", "drone", "sabotage"],
+        "defense": ["ochrona_wojskowa", "system_antydron", "agregat_24h", "bunker", "szyfrowanie_sieci"],
+    },
+    "wiezyczka_cisnienia": {
+        "name": "Wieżyczka Ciśnień (Zachód)",
+        "type": "water",
+        "lat": 50.5668, "lng": 22.0452,
+        "criticality": 3, "backup_power_hours": 0,
+        "powers": [],
+        "dependencies": ["pompownia_centralna"],
+        "vulnerability": ["drone", "sabotage"],
+        "defense": ["ogrodzenie"],
+    },
+    "linia_telekomunikacyjna": {
+        "name": "Węzeł Telekomunikacyjny TP",
+        "type": "communications",
+        "lat": 50.5764, "lng": 22.0622,
+        "criticality": 4, "backup_power_hours": 4,
+        "powers": [],
+        "dependencies": ["stacja_transf_polnoc"],
+        "vulnerability": ["cyber", "drone", "sabotage"],
+        "defense": ["monitoring_cctv", "szyfrowanie_sieci", "ups_system"],
+    },
+}
+
+
+def _severity(attacked_id: str, all_affected_ids: list[str]) -> str:
+    """
+    Ocena skali wg liczby obiektów o krytyczności == 5 (wg referencyj. algorytmu).
+    Uwzględnia też sam zaatakowany obiekt.
+    """
+    attacked = INFRASTRUCTURE.get(attacked_id, {})
+    crit5 = sum(
+        1 for i in all_affected_ids
+        if INFRASTRUCTURE.get(i, {}).get("criticality") == 5
+    )
+    if attacked.get("criticality") == 5:
+        crit5 += 1
+    if crit5 >= 3:
+        return "KATASTROFALNY"
+    if crit5 >= 2:
+        return "KRYTYCZNY"
+    if crit5 >= 1:
+        return "POWAŻNY"
+    return "UMIARKOWANY"
+
+
+def analyze_impact(object_id: str, attack_time_minutes: int = 0) -> "dict | None":
+    """
+    Propagacja skutków ataku — BFS po grafie dependencies (reverse lookup).
+
+    Zwraca:
+      immediate    — backup_hours == 0
+      cascade_4h   — 0 < backup <= 4h
+      cascade_8h   — 4h < backup <= 8h
+      cascade_t3   — backup > 8h (obiekty odporne, ale tracą źródło zasilania)
+      critical_affected — liczba obiektów z criticality >= 4
+      affected_details  — pełne dane per obiekt (name/type/criticality/backup/depth)
+    """
+    if object_id not in INFRASTRUCTURE:
+        return None
+
+    attacked = INFRASTRUCTURE[object_id]
+
+    affected: dict[str, dict] = {}
+    queue: deque[tuple[str, int]] = deque([(object_id, 0)])
+    visited: set[str] = set()
+
+    while queue:
+        obj_id, depth = queue.popleft()
+        if obj_id in visited:
+            continue
+        visited.add(obj_id)
+
+        if obj_id != object_id:
+            obj = INFRASTRUCTURE[obj_id]
+            backup_h = obj.get("backup_power_hours", 0)
+            affected[obj_id] = {
+                "name":             obj["name"],
+                "type":             obj["type"],
+                "criticality":      obj["criticality"],
+                "backup_hours":     backup_h,
+                "fails_after_hours": backup_h,
+                "depth":            depth,
+            }
+
+        # Znajdź obiekty zależne od bieżącego (reverse lookup przez dependencies)
+        for other_id, other_obj in INFRASTRUCTURE.items():
+            if obj_id in other_obj.get("dependencies", []) and other_id not in visited:
+                queue.append((other_id, depth + 1))
+
+    # Grupuj po czasie awarii (klucze zachowane dla kompatybilności z frontendem)
+    immediate   = [k for k, v in affected.items() if v["backup_hours"] == 0]
+    cascade_4h  = [k for k, v in affected.items() if 0 < v["backup_hours"] <= 4]
+    cascade_8h  = [k for k, v in affected.items() if 4 < v["backup_hours"] <= 8]
+    cascade_t3  = [k for k, v in affected.items() if v["backup_hours"] > 8]
+
+    all_affected_ids = immediate + cascade_4h + cascade_8h + cascade_t3
+    critical_count = sum(
+        1 for i in all_affected_ids
+        if INFRASTRUCTURE.get(i, {}).get("criticality", 0) >= 4
+    )
+
+    return {
+        "attacked_id":       object_id,
+        "attacked_name":     attacked["name"],
+        "attacked_type":     attacked["type"],
+        "total_affected":    len(affected),
+        "critical_affected": critical_count,
+        "immediate":         immediate,
+        "cascade_4h":        cascade_4h,
+        "cascade_8h":        cascade_8h,
+        "cascade_t3":        cascade_t3,
+        "affected_details":  affected,
+        "severity":          _severity(object_id, all_affected_ids),
+    }
+
 
 CUSTOM_POINTS_FILE = "custom_points.json"
 
@@ -232,6 +492,10 @@ async def _get_chroma_collection():
                 import chromadb
                 _chroma_client = chromadb.PersistentClient(path=str(RAG_CHROMA_DIR))
     return _chroma_client.get_collection(RAG_COLLECTION)
+
+
+class ThreatScenarioRequest(BaseModel):
+    threat_type: str = "drone"   # drone | missile | sabotage | cyber | chemical
 
 
 class RagQuery(BaseModel):
@@ -443,6 +707,221 @@ async def _index_document_bg(filepath: Path, filename: str) -> None:
 @app.get("/api/rag/status")
 async def rag_status():
     return _indexing_state
+
+
+# ---------------------------------------------------------------------------
+# Infrastruktura krytyczna — endpointy
+# ---------------------------------------------------------------------------
+
+@app.get("/api/critical-infrastructure")
+async def get_critical_infrastructure():
+    return INFRASTRUCTURE
+
+
+@app.post("/api/impact/{object_id}")
+async def impact_analysis(object_id: str):
+    result = analyze_impact(object_id)
+    if result is None:
+        return JSONResponse(status_code=404, content={"error": f"Obiekt '{object_id}' nie istnieje w grafie"})
+    return result
+
+
+@app.post("/api/threat-scenario/{object_id}")
+async def threat_scenario(object_id: str, body: Optional[ThreatScenarioRequest] = None):
+    if object_id not in INFRASTRUCTURE:
+        return JSONResponse(status_code=404, content={"error": f"Obiekt '{object_id}' nie istnieje w grafie"})
+
+    obj = INFRASTRUCTURE[object_id]
+    # Typ zagrożenia — z body lub fallback na pierwszą podatność obiektu
+    threat_type = (body.threat_type if body else None) or obj.get("vulnerability", ["drone"])[0]
+
+    impact = analyze_impact(object_id)
+    assert impact is not None
+
+    # RAG — zapytanie uwzględnia typ zagrożenia (zgodnie z referencją)
+    rag_query = (
+        f"procedury ochrony infrastruktury krytycznej {threat_type} atak "
+        f"{obj['name']} Stalowa Wola"
+    )
+
+    context_chunks: list[str] = []
+    rag_sources: list[str] = []
+    try:
+        if RAG_CHROMA_DIR.exists():
+            async with httpx.AsyncClient() as http:
+                embed_resp = await http.post(
+                    f"{RAG_OLLAMA_URL}/api/embed",
+                    json={"model": RAG_EMBED_MODEL, "input": rag_query},
+                    timeout=30,
+                )
+                if embed_resp.status_code == 200:
+                    embedding = embed_resp.json()["embeddings"][0]
+                    col = await _get_chroma_collection()
+                    results = col.query(
+                        query_embeddings=[embedding],
+                        n_results=5,
+                        include=["documents", "metadatas"],
+                    )
+                    context_chunks = (results.get("documents") or [[]])[0]
+                    metas = (results.get("metadatas") or [[]])[0]
+                    rag_sources = [
+                        str(m.get("source", "?")) for m in metas[:3] if m
+                    ]
+    except Exception:
+        pass
+
+    # Buduj opis kaskady z backup_hours i depth per obiekt
+    details = impact.get("affected_details", {})
+
+    def _obj_detail(ids: list[str]) -> str:
+        parts = []
+        for i in ids:
+            info = details.get(i, {})
+            name = str(INFRASTRUCTURE.get(i, {}).get("name", i))
+            backup = info.get("backup_hours", 0)
+            depth = info.get("depth", 1)
+            dep_label = "bezpośrednia" if depth == 1 else f"kaskada (głęb.{depth})"
+            parts.append(f"{name} [rezerwa: {backup}h, zależność: {dep_label}]")
+        return "\n  ".join(parts) if parts else "brak"
+
+    cascade_txt = ""
+    if impact["immediate"]:
+        cascade_txt += f"\nNATYCHMIASTOWA AWARIA (0h):\n  {_obj_detail(impact['immediate'])}"
+    if impact["cascade_4h"]:
+        cascade_txt += f"\nAWARIA W CIĄGU 4H:\n  {_obj_detail(impact['cascade_4h'])}"
+    if impact["cascade_8h"]:
+        cascade_txt += f"\nAWARIA W CIĄGU 8H:\n  {_obj_detail(impact['cascade_8h'])}"
+    if impact["cascade_t3"]:
+        cascade_txt += f"\nODPORNE >8H (tracą źródło zasilania):\n  {_obj_detail(impact['cascade_t3'])}"
+    if not cascade_txt:
+        cascade_txt = "\nBrak kaskady zależności."
+
+    vuln_txt    = ", ".join(obj.get("vulnerability", []))
+    defense_txt = ", ".join(obj.get("defense", [])) or "brak danych"
+    context_text = (
+        "\n\n---\n\n".join(context_chunks[:5])
+        if context_chunks
+        else "Brak kontekstu z bazy wiedzy."
+    )
+
+    # Zasoby ochrony dotkniętych obiektów
+    def _defense_summary(ids: list[str]) -> str:
+        lines = []
+        for i in ids:
+            o = INFRASTRUCTURE.get(i)
+            if o and o.get("defense"):
+                d = ", ".join(o["defense"])
+                lines.append(f"  - {o['name']}: {d}")
+        return "\n".join(lines) if lines else "  brak danych"
+
+    all_affected = impact["immediate"] + impact["cascade_4h"] + impact["cascade_8h"] + impact["cascade_t3"]
+    affected_defense = _defense_summary(all_affected)
+
+    nearest_unit = min(
+        (u for u in UNITS if u["role"] != "command"),
+        key=lambda u: (u["lat"] - obj["lat"]) ** 2 + (u["lng"] - obj["lng"]) ** 2,
+    )
+
+    system_prompt = (
+        "Jesteś systemem analizy zagrożeń infrastruktury krytycznej. "
+        "Łączysz dane techniczne z procedurami operacyjnymi. "
+        "Odpowiadaj zwięźle i operacyjnie."
+    )
+
+    prompt = f"""Analizujesz skutki ataku na infrastrukturę krytyczną Stalowej Woli. Odpowiadaj WYŁĄCZNIE po polsku.
+
+KONTEKST Z BAZY WIEDZY:
+{context_text}
+
+ZAATAKOWANY OBIEKT:
+Nazwa: {obj['name']}
+Typ: {obj['type']}
+Krytyczność: {obj['criticality']}/5
+Typ zagrożenia: {threat_type}
+Podatności: {vuln_txt}
+Aktualna ochrona: {defense_txt}
+Współrzędne: {obj['lat']:.4f}°N, {obj['lng']:.4f}°E
+
+ANALIZA KASKADY AWARII (ocena: {impact['severity']}):
+{cascade_txt}
+Łącznie dotkniętych: {impact['total_affected']} obiektów
+Obiekty krytyczne (kryt.≥4) dotknięte atakiem: {impact['critical_affected']}
+
+OCHRONA DOTKNIĘTYCH OBIEKTÓW:
+{affected_defense}
+
+NAJBLIŻSZA JEDNOSTKA: {nearest_unit['name']} (rola: {nearest_unit['role']})
+
+Odpowiedz WYŁĄCZNIE w trzech sekcjach:
+
+## SCENARIUSZ ZAGROŻENIA
+Opisz realistyczny przebieg ataku typu {threat_type} i bezpośrednie skutki dla mieszkańców (3-5 zdań). Uwzględnij istniejącą ochronę i czas działania rezerw.
+
+## REKOMENDACJE
+Odpowiedz na pytania operacyjne (każde działanie zaczynając od "- "):
+- Jakie są natychmiastowe priorytety działania?
+- Które obiekty wymagają ewakuacji lub wsparcia?
+- Jakie zasoby uruchomić w pierwszej kolejności?
+- Jak długo system może działać bez interwencji?
+
+## ROZKAZ OPERACYJNY
+Sformułuj krótki rozkaz (2-3 zdania) dla jednostki {nearest_unit['name']}.
+
+ODPOWIEDŹ:"""
+
+    answer = ""
+    try:
+        async with httpx.AsyncClient() as http:
+            gen_resp = await http.post(
+                f"{RAG_OLLAMA_URL}/api/generate",
+                json={
+                    "model":  RAG_GEN_MODEL,
+                    "prompt": prompt,
+                    "system": system_prompt,
+                    "stream": False,
+                },
+                timeout=120,
+            )
+            if gen_resp.status_code == 200:
+                answer = gen_resp.json().get("response", "")
+    except Exception as e:
+        answer = f"[Błąd generowania odpowiedzi: {e}]"
+
+    # Parsuj sekcje z odpowiedzi
+    scenario = ""
+    recommendations: list[str] = []
+    order = ""
+
+    if "## SCENARIUSZ" in answer or "## REKO" in answer or "## ROZKAZ" in answer:
+        for part in answer.split("##"):
+            part = part.strip()
+            if part.upper().startswith("SCENARIUSZ"):
+                scenario = part.split("\n", 1)[-1].strip()
+            elif part.upper().startswith("REKOMENDACJE"):
+                rec_block = part.split("\n", 1)[-1].strip()
+                recommendations = [
+                    r.lstrip("- ").strip()
+                    for r in rec_block.splitlines()
+                    if r.strip().startswith("-")
+                ]
+            elif part.upper().startswith("ROZKAZ"):
+                order = part.split("\n", 1)[-1].strip()
+
+    if not scenario:
+        scenario = answer  # fallback
+
+    return {
+        "object_id":       object_id,
+        "object_name":     obj["name"],
+        "threat_type":     threat_type,
+        "impact":          impact,
+        "scenario":        scenario,
+        "recommendations": recommendations,
+        "order":           order,
+        "raw_response":    answer,
+        "rag_chunks_used": len(context_chunks),
+        "rag_sources":     rag_sources,
+    }
 
 
 @app.post("/api/rag/upload")

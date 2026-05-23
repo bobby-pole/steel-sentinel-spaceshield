@@ -6,12 +6,12 @@ const STATUS_COLORS: Record<Unit["status"], string> = {
   sos: "#ef4444",
 };
 
-const ROLE_EMOJI: Record<Unit["role"], string> = {
-  recon: "🔭",
-  medic: "🏥",
-  engineer: "🔧",
-  command: "🎯",
-  drone: "🚁",
+const ROLE_LABEL: Record<Unit["role"], string> = {
+  recon:    "RCN",
+  medic:    "MED",
+  engineer: "ENG",
+  command:  "CMD",
+  drone:    "UAV",
 };
 
 interface Props {
@@ -62,7 +62,18 @@ export function StatusPanel({ units, selectedUnit, onSelectUnit }: Props) {
               background: STATUS_COLORS[unit.status],
               flexShrink: 0,
             }} />
-            <span>{ROLE_EMOJI[unit.role]}</span>
+            <span style={{
+              fontFamily: "'Courier New', monospace",
+              fontWeight: 700,
+              fontSize: 10,
+              letterSpacing: "0.06em",
+              color: STATUS_COLORS[unit.status],
+              background: `${STATUS_COLORS[unit.status]}18`,
+              border: `1px solid ${STATUS_COLORS[unit.status]}44`,
+              borderRadius: 3,
+              padding: "1px 4px",
+              flexShrink: 0,
+            }}>{ROLE_LABEL[unit.role]}</span>
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600 }}>{unit.name}</div>
               <div style={{ fontSize: 11, color: "#64748b" }}>
