@@ -36,6 +36,11 @@ CRITICAL_TAGS = {
     ("amenity", "fire_station"),
     ("amenity", "police"),
     ("landuse", "industrial"),
+    ("amenity", "school"),
+    ("amenity", "university"),
+    ("amenity", "college"),
+    ("amenity", "town_hall"),
+    ("office",  "government"),
 }
 
 OVERPASS_ENDPOINTS = [
@@ -208,9 +213,17 @@ def build_dependencies() -> None:
         )
     ]
 
+    # Mosty
+    bridge_elements = [
+        e for e in elements
+        if e.get("tags", {}).get("bridge") == "yes"
+        or e.get("tags", {}).get("man_made") == "bridge"
+    ]
+
     print(f"Załadowano: {len(power_lines)} linii, {len(substations)} stacji, "
           f"{len(power_plants)} elektrowni, {len(water_sources)} źródeł wody, "
-          f"{len(water_pipe_elements)} rurociągów/cieków, {len(facilities)} obiektów krytycznych\n")
+          f"{len(water_pipe_elements)} rurociągów/cieków, {len(facilities)} obiektów krytycznych, "
+          f"{len(bridge_elements)} mostów\n")
 
     # -----------------------------------------------------------------------
     # Krok 1: Zbierz wszystkie node IDs — linie energetyczne + rurociągi wodne
@@ -492,6 +505,22 @@ def build_dependencies() -> None:
             "geometry": geom,
         })
 
+    bridge_nodes = []
+    for br in bridge_elements:
+        br_coords = get_coords(br)
+        if not br_coords:
+            continue
+        b_lat, b_lon = br_coords
+        tags = br.get("tags", {})
+        bridge_nodes.append({
+            "bridge_id": br["id"],
+            "name":      tags.get("name", f"Most #{br['id']}"),
+            "lat":       b_lat,
+            "lon":       b_lon,
+            "road_ref":  tags.get("ref", ""),
+            "road_type": tags.get("highway", tags.get("railway", "unknown")),
+        })
+
     result = {
         "generated_at":    __import__("datetime").datetime.utcnow().isoformat() + "Z",
         "thresholds": {
@@ -503,6 +532,7 @@ def build_dependencies() -> None:
         "substation_zones": substation_zones,
         "water_zones":      water_zones,
         "water_pipes":      water_pipes,
+        "bridge_nodes":     bridge_nodes,
         "facility_deps":    facility_deps,
     }
 
@@ -514,6 +544,7 @@ def build_dependencies() -> None:
     print(f"  {len(substation_zones)} stref zasilania elektrycznego")
     print(f"  {len(water_zones)} stref zasilania w wodę")
     print(f"  {len(water_pipes)} rurociągów/cieków z geometrią")
+    print(f"  {len(bridge_nodes)} mostów")
     print(f"  {len(facility_deps)} obiektów krytycznych z zależnościami")
 
     # Podsumowanie pokrycia

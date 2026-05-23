@@ -5,6 +5,7 @@ import { useInfrastructure } from "../src/hooks/useInfrastructure";
 import { useDependencies } from "../src/hooks/useDependencies";
 import type { Unit, InfraCategory } from "../src/types";
 import { INFRA_CONFIG } from "../src/utils/infraConfig";
+import type { HighlightLocation } from "../src/App";
 
 import { Controls } from "../src/components/Controls";
 import { StatusPanel } from "../src/components/StatusPanel";
@@ -12,7 +13,12 @@ import { LeafletMap } from "../src/components/LeafletMap";
 
 const ALL_CATEGORIES = Object.keys(INFRA_CONFIG) as InfraCategory[];
 
-export const MapContainer = () => {
+interface MapContainerProps {
+  highlightLocation?: HighlightLocation | null;
+  onHighlightConsumed?: () => void;
+}
+
+export const MapContainer = ({ highlightLocation, onHighlightConsumed }: MapContainerProps) => {
     const [units, setUnits] = useState<Unit[]>([]);
     const [selectedUnit, setSelectedUnit] = useState<string | null>(null);
     const [followMode, setFollowMode] = useState(false);
@@ -101,8 +107,8 @@ export const MapContainer = () => {
     });
 
     return (
-        <div style={{ display: "flex", height: "100vh" }}>
-            <div style={{ flex: 1 }}>
+        <div style={{ display: "flex", height: "100%", minHeight: 0 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
                 <LeafletMap
                     units={units}
                     selectedUnit={selectedUnit}
@@ -119,11 +125,14 @@ export const MapContainer = () => {
                     onMapClick={handleAddPoint}
                     onDeletePoint={handleDeletePoint}
                     customPoints={customPoints}
+                    highlightLocation={highlightLocation}
+                    onHighlightConsumed={onHighlightConsumed}
                 />
             </div>
 
             <div style={{
                 width: 320,
+                flexShrink: 0,
                 background: "#1e293b",
                 padding: 16,
                 overflowY: "auto",

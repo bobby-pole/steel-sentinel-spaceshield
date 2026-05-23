@@ -18,5 +18,7 @@ export const INFRA_CONFIG: Record<
   industrial:      { emoji: "🏭", color: "#94a3b8", label: "Strefa przemysłowa",  zIndex: 500, minZoom: 14 },
   railway:         { emoji: "🚂", color: "#c084fc", label: "Kolej",               zIndex: 550, minZoom: 14 },
   highway:         { emoji: "🛣️",  color: "#6b7280", label: "Droga",              zIndex: 510, minZoom: 14 },
+  building:        { emoji: "🏛️", color: "#a78bfa", label: "Budynek publiczny",  zIndex: 620, minZoom: 15 },
+  bridge:          { emoji: "🌉", color: "#22d3ee", label: "Most / wiadukt",      zIndex: 580, minZoom: 16 },
   other:           { emoji: "📍", color: "#64748b", label: "Inny obiekt",         zIndex: 400, minZoom: 14 },
 };

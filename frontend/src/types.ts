@@ -21,6 +21,8 @@ export type InfraCategory =
   | "railway"
   | "power_line"
   | "highway"
+  | "building"
+  | "bridge"
   | "other";
 
 export interface InfrastructureElement {
@@ -90,6 +92,15 @@ export interface WaterPipeChain {
   geometry: [number, number][];
 }
 
+export interface BridgeNode {
+  bridge_id:  number;
+  name:       string;
+  lat:        number;
+  lon:        number;
+  road_ref:   string;
+  road_type:  string;
+}
+
 export interface DependencyGraph {
   generated_at:     string;
   thresholds:       { line_to_substation_m: number; substation_to_facility_m: number; water_source_to_facility_m?: number };
@@ -97,6 +108,7 @@ export interface DependencyGraph {
   substation_zones: SubstationZone[];
   water_zones?:     WaterZone[];
   water_pipes?:     WaterPipe[];
+  bridge_nodes?:    BridgeNode[];
   facility_deps:    FacilityDep[];
 }
 

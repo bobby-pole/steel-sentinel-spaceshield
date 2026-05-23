@@ -20,11 +20,18 @@ function classify(tags: Record<string, string>): InfraCategory | null {
   if (tags.man_made === "pumping_station")            return "pumping_station";
   if (tags.man_made === "water_tower")                return "water_tower";
   if (tags.man_made === "reservoir_covered")          return "reservoir";
+  if (tags.man_made === "bridge")                     return "bridge";
   if (tags.landuse  === "reservoir")                  return "reservoir";
   if (tags.amenity === "hospital")                    return "hospital";
   if (tags.amenity === "fire_station")                return "fire_station";
   if (tags.amenity === "police")                      return "police";
+  if (tags.amenity === "school" || tags.amenity === "university" || tags.amenity === "college") return "building";
+  if (tags.amenity === "town_hall")                   return "building";
+  if (tags.office === "government")                   return "building";
+  if (tags.building === "government" || tags.building === "civic") return "building";
   if (tags.landuse === "industrial")                  return "industrial";
+  // Mosty: przed railway i highway, żeby most kolejowy/drogowy nie był klasyfikowany jako droga/kolej
+  if (tags.bridge === "yes" && (tags.highway || tags.railway)) return "bridge";
   if (tags.railway)                                   return "railway";
   if (tags.highway)                                   return "highway";
   return "other";
@@ -46,6 +53,8 @@ function label(tags: Record<string, string>, category: InfraCategory): string {
     industrial:      "Strefa przemysłowa",
     railway:         "Kolej",
     highway:         "Droga",
+    building:        "Budynek publiczny",
+    bridge:          "Most",
     other:           "Obiekt",
   };
   return fallbacks[category];

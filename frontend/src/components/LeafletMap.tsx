@@ -2,6 +2,7 @@ import { useRef, useEffect } from "react";
 import L from "leaflet";
 import "leaflet.markercluster";
 import type { Unit, InfrastructureElement, InfraCategory, DependencyGraph } from "../types";
+import type { HighlightLocation } from "../App";
 import { createInfraIcon, createInfraPopup } from "./InfrastructureMarker";
 import { INFRA_CONFIG } from "../utils/infraConfig";
 import { initDependencyLayer, type DependencyLayerHandle } from "./DependencyLayer";
@@ -112,9 +113,11 @@ interface Props {
   onMapClick?: (lat: number, lng: number) => void;
   onDeletePoint?: (id: string) => void;
   customPoints?: import("../types").CustomPoint[];
+  highlightLocation?: HighlightLocation | null;
+  onHighlightConsumed?: () => void;
 }
 
-export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOnline, infraItems, showInfra, activeCategories, dependencyGraph, showDeps, mapStyle = "sentinel", isAddingMode, onMapClick, onDeletePoint, customPoints = [] }: Props) {
+export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOnline, infraItems, showInfra, activeCategories, dependencyGraph, showDeps, mapStyle = "sentinel", isAddingMode, onMapClick, onDeletePoint, customPoints = [], highlightLocation, onHighlightConsumed }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
@@ -127,6 +130,7 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
   const zoomHandlerRef = useRef<(() => void) | null>(null);
   const clickHandlerRef = useRef<((e: L.LeafletMouseEvent) => void) | null>(null);
   const customMarkersRef = useRef<L.LayerGroup | null>(null);
+  const highlightMarkerRef = useRef<L.Marker | null>(null);
 
   // EFFECT 1: Inicjalizacja mapy + cluster groups
   useEffect(() => {
@@ -309,7 +313,84 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
     const clusterGroups = clusterGroupsRef.current;
     const infraMarkers = infraMarkersRef.current;
 
-    // Funkcja przebudowująca widoczność cluster groups względem aktualnego zoom
+    // Lazy: tworzy markery dla kategorii dopiero gdy staje się widoczna (oszczędza RAM i czas)
+    const populateCategory = (cat: InfraCategory) => {
+      const group = clusterGroups.get(cat);
+      if (!group) return;
+
+      for (const el of infraItems) {
+        if (el.category !== cat) continue;
+        if (infraMarkers.has(el.id)) continue;
+
+        const lat = el.lat;
+        const lon = el.lon;
+        if (lat === undefined || lon === undefined) continue;
+
+        const marker = L.marker([lat, lon], {
+          icon: createInfraIcon(el),
+          zIndexOffset: -200,
+        });
+        marker.bindPopup(createInfraPopup(el), { maxWidth: 280 });
+        marker.bindTooltip(el.label, { direction: "top", offset: [0, -18] });
+
+        const supplyRadius = WATER_SUPPLY_RADIUS[el.category];
+        if (supplyRadius) {
+          marker.on("mouseover", () => {
+            const currentMap = mapRef.current;
+            if (!currentMap) return;
+            if (waterRadiusRef.current) currentMap.removeLayer(waterRadiusRef.current);
+
+            const cfg = INFRA_CONFIG[el.category];
+            const radiusGroup = L.layerGroup();
+
+            L.circle([lat, lon], {
+              radius: supplyRadius,
+              color: cfg.color,
+              fillColor: cfg.color,
+              fillOpacity: 0.07,
+              weight: 1.5,
+              dashArray: "7 5",
+              interactive: false,
+            }).addTo(radiusGroup);
+
+            L.marker([lat, lon], {
+              icon: L.divIcon({
+                className: "",
+                iconAnchor: [0, -34],
+                html: `<div style="
+                  background:#0f172acc;
+                  border:1px solid ${cfg.color}66;
+                  border-radius:4px;
+                  padding:2px 8px;
+                  font-size:10px;
+                  color:${cfg.color};
+                  white-space:nowrap;
+                  pointer-events:none;
+                  font-family:system-ui,sans-serif;
+                  transform:translateX(-50%);
+                ">Zasięg ~${(supplyRadius / 1000).toFixed(1)} km</div>`,
+              }),
+              interactive: false,
+            }).addTo(radiusGroup);
+
+            radiusGroup.addTo(currentMap);
+            waterRadiusRef.current = radiusGroup;
+          });
+
+          marker.on("mouseout", () => {
+            if (waterRadiusRef.current && mapRef.current) {
+              mapRef.current.removeLayer(waterRadiusRef.current);
+              waterRadiusRef.current = null;
+            }
+          });
+        }
+
+        group.addLayer(marker);
+        infraMarkers.set(el.id, { marker, category: el.category });
+      }
+    };
+
+    // Synchronizuje widoczność grup z aktualnym zoom; tworzy markery leniwie przy pierwszym pokazaniu
     const syncInfraVisibility = () => {
       if (!mapRef.current) return;
       const currentZoom = mapRef.current.getZoom();
@@ -318,9 +399,10 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
         const cfg = INFRA_CONFIG[cat];
         const visible = showInfra && activeCategories.has(cat) && currentZoom >= cfg.minZoom;
 
-        if (visible && !mapRef.current.hasLayer(group)) {
-          group.addTo(mapRef.current);
-        } else if (!visible && mapRef.current.hasLayer(group)) {
+        if (visible) {
+          populateCategory(cat);
+          if (!mapRef.current.hasLayer(group)) group.addTo(mapRef.current);
+        } else if (mapRef.current.hasLayer(group)) {
           mapRef.current.removeLayer(group);
         }
       }
@@ -335,8 +417,7 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
 
     // Wyczyść markery kategorii które zostały odznaczone/ukryte
     for (const [id, { marker, category }] of infraMarkers) {
-      const visible = showInfra && activeCategories.has(category);
-      if (!visible) {
+      if (!showInfra || !activeCategories.has(category)) {
         const group = clusterGroups.get(category);
         if (group) group.removeLayer(marker);
         infraMarkers.delete(id);
@@ -344,90 +425,12 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
     }
 
     if (!showInfra) {
-      // Usuń wszystkie cluster groups z mapy
       for (const group of clusterGroups.values()) {
         if (map.hasLayer(group)) map.removeLayer(group);
       }
       return;
     }
 
-    // Dodaj brakujące markery do odpowiednich grup
-    for (const el of infraItems) {
-      if (!activeCategories.has(el.category)) continue;
-      if (infraMarkers.has(el.id)) continue;
-
-      const lat = el.lat;
-      const lon = el.lon;
-      if (lat === undefined || lon === undefined) continue;
-
-      const group = clusterGroups.get(el.category);
-      if (!group) continue;
-
-      const marker = L.marker([lat, lon], {
-        icon: createInfraIcon(el),
-        zIndexOffset: -200,
-      });
-      marker.bindPopup(createInfraPopup(el), { maxWidth: 280 });
-      marker.bindTooltip(el.label, { direction: "top", offset: [0, -18] });
-
-      const supplyRadius = WATER_SUPPLY_RADIUS[el.category];
-      if (supplyRadius) {
-        marker.on("mouseover", () => {
-          const currentMap = mapRef.current;
-          if (!currentMap) return;
-          if (waterRadiusRef.current) currentMap.removeLayer(waterRadiusRef.current);
-
-          const cfg = INFRA_CONFIG[el.category];
-          const group = L.layerGroup();
-
-          L.circle([lat, lon], {
-            radius: supplyRadius,
-            color: cfg.color,
-            fillColor: cfg.color,
-            fillOpacity: 0.07,
-            weight: 1.5,
-            dashArray: "7 5",
-            interactive: false,
-          }).addTo(group);
-
-          L.marker([lat, lon], {
-            icon: L.divIcon({
-              className: "",
-              iconAnchor: [0, -34],
-              html: `<div style="
-                background:#0f172acc;
-                border:1px solid ${cfg.color}66;
-                border-radius:4px;
-                padding:2px 8px;
-                font-size:10px;
-                color:${cfg.color};
-                white-space:nowrap;
-                pointer-events:none;
-                font-family:system-ui,sans-serif;
-                transform:translateX(-50%);
-              ">Zasięg ~${(supplyRadius / 1000).toFixed(1)} km</div>`,
-            }),
-            interactive: false,
-          }).addTo(group);
-
-          group.addTo(currentMap);
-          waterRadiusRef.current = group;
-        });
-
-        marker.on("mouseout", () => {
-          if (waterRadiusRef.current && mapRef.current) {
-            mapRef.current.removeLayer(waterRadiusRef.current);
-            waterRadiusRef.current = null;
-          }
-        });
-      }
-
-      group.addLayer(marker);
-
-      infraMarkers.set(el.id, { marker, category: el.category });
-    }
-
-    // Synchronizuj widoczność grup z aktualnym zoom
     syncInfraVisibility();
 
   }, [infraItems, showInfra, activeCategories]);
@@ -507,5 +510,75 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
     }
   }, [customPoints, onDeletePoint]);
 
-  return <div ref={containerRef} style={{ height: "100%", width: "100%" }} />;
+  // EFFECT 10: Highlight location from RAG (flyTo + pulsing marker)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !highlightLocation) return;
+
+    const { lat, lon, name, category } = highlightLocation;
+
+    // Remove previous highlight
+    if (highlightMarkerRef.current) {
+      map.removeLayer(highlightMarkerRef.current);
+      highlightMarkerRef.current = null;
+    }
+
+    const catEmoji: Record<string, string> = {
+      bridge: "🌉", hospital: "🏥", fire_station: "🚒", police: "🚔",
+      power_plant: "⚡", substation: "⚡", water_works: "💧",
+      pumping_station: "💧", water_tower: "💧", building: "🏛️", industrial: "🏭",
+    };
+    const emoji = category ? (catEmoji[category] ?? "📍") : "📍";
+
+    const icon = L.divIcon({
+      className: "",
+      iconSize: [48, 48],
+      iconAnchor: [24, 24],
+      html: `
+        <style>
+          @keyframes rag-ring {
+            0%   { transform: scale(0.6); opacity: 1; }
+            100% { transform: scale(2.2); opacity: 0; }
+          }
+          @keyframes rag-bob {
+            0%,100% { transform: translateY(0); }
+            50%     { transform: translateY(-5px); }
+          }
+        </style>
+        <div style="position:relative;width:48px;height:48px;">
+          <div style="position:absolute;inset:0;border-radius:50%;border:3px solid #f59e0b;animation:rag-ring 1.4s ease-out infinite;"></div>
+          <div style="position:absolute;inset:0;border-radius:50%;border:3px solid #f59e0b;animation:rag-ring 1.4s ease-out infinite;animation-delay:0.5s;"></div>
+          <div style="
+            position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+            width:32px;height:32px;border-radius:50%;
+            background:#0f172a;border:2.5px solid #f59e0b;
+            display:flex;align-items:center;justify-content:center;
+            font-size:16px;animation:rag-bob 2s ease-in-out infinite;
+            box-shadow:0 0 12px #f59e0b88;
+          ">${emoji}</div>
+        </div>`,
+    });
+
+    const marker = L.marker([lat, lon], { icon, zIndexOffset: 1000 });
+    marker.bindPopup(
+      `<div style="font-family:system-ui,sans-serif;color:#0f172a;min-width:160px">
+        <strong style="color:#d97706">${emoji} ${name}</strong><br/>
+        <span style="font-size:11px;color:#64748b">${category ? category.replace(/_/g, " ") : ""}</span><br/>
+        <span style="font-size:10px;color:#94a3b8">${lat.toFixed(5)}°N, ${lon.toFixed(5)}°E</span>
+      </div>`,
+      { autoClose: false, closeOnClick: true }
+    );
+
+    marker.addTo(map);
+    marker.openPopup();
+    highlightMarkerRef.current = marker;
+
+    map.flyTo([lat, lon], Math.max(map.getZoom(), 16), { animate: true, duration: 1.2 });
+
+    // Clear the state after consuming so it doesn't re-trigger on unrelated re-renders
+    onHighlightConsumed?.();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightLocation]);
+
+  return <div ref={containerRef} style={{ height: "100%", width: "100%", outline: "none" }} />;
 }

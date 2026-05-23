@@ -51,11 +51,47 @@ CATEGORY_LABELS: dict[str, str] = {
     "railway":         "Kolej",
     "waterway":        "Droga wodna",
     "highway":         "Droga",
+    "building":        "Budynek publiczny",
+    "bridge":          "Most / wiadukt",
     "other":           "Obiekt",
 }
 
 # Kategorie pomijane — reprezentowane przez linie/polilinie, nie punkty
 _SKIP_CATEGORIES = {"highway", "railway", "power_line", "waterway", "water_pipe"}
+
+# Typy dróg bez znaczenia strategicznego — kładki, ścieżki, szlaki
+_SKIP_BRIDGE_HW = {"footway", "path", "cycleway", "track", "steps", "proposed", "construction", "pedestrian"}
+
+def _bridge_importance(tags: dict) -> str:
+    """Zwraca opis strategicznego znaczenia mostu na podstawie klasy drogi."""
+    hw  = tags.get("highway", "")
+    ref = tags.get("ref", "")
+
+    if hw in ("motorway", "motorway_link", "trunk", "trunk_link"):
+        cls = "Autostrada / droga ekspresowa"
+        lvl = "NAJWYŻSZE znaczenie strategiczne"
+    elif hw == "primary":
+        ref_txt = f"drogi krajowej {ref}" if ref else "drogi krajowej"
+        cls = f"Droga krajowa ({ref_txt})"
+        lvl = "KLUCZOWA przeprawa — jedyna lub główna trasa przelotowa przez tę przeszkodę"
+    elif hw == "secondary":
+        ref_txt = f" {ref}" if ref else ""
+        cls = f"Droga wojewódzka{ref_txt}"
+        lvl = "Ważna przeprawa regionalna"
+    elif hw in ("tertiary", "unclassified", "residential", "service"):
+        cls = "Droga lokalna"
+        lvl = "Przeprawa lokalna — ograniczone znaczenie strategiczne"
+    elif hw == "":
+        cls = "Przeprawa drogowa"
+        lvl = "Znaczenie strategiczne nieznane (brak klasyfikacji drogi)"
+    else:
+        cls = f"Droga ({hw})"
+        lvl = "Przeprawa o niskim znaczeniu strategicznym"
+
+    sentence = f"Klasyfikacja: {cls}. {lvl}."
+    if ref and hw == "primary":
+        sentence += f" Zniszczenie odcina ruch na trasie {ref}."
+    return sentence
 
 
 # ---------------------------------------------------------------------------
@@ -69,11 +105,16 @@ def _classify(tags: dict) -> str:
     if tags.get("man_made") == "pumping_station":       return "pumping_station"
     if tags.get("man_made") == "water_tower":           return "water_tower"
     if tags.get("man_made") in ("reservoir_covered",):  return "reservoir"
+    if tags.get("man_made") == "bridge":                return "bridge"
     if tags.get("landuse") == "reservoir":              return "reservoir"
     if tags.get("amenity") == "hospital":               return "hospital"
     if tags.get("amenity") == "fire_station":           return "fire_station"
     if tags.get("amenity") == "police":                 return "police"
+    if tags.get("amenity") in ("school", "university", "college", "town_hall"): return "building"
+    if tags.get("office") == "government":              return "building"
+    if tags.get("building") in ("government", "civic"): return "building"
     if tags.get("landuse") == "industrial":             return "industrial"
+    if tags.get("bridge") == "yes" and (tags.get("highway") or tags.get("railway")): return "bridge"
     if tags.get("railway"):                             return "railway"
     if tags.get("man_made") == "pipeline":              return "water_pipe"
     if tags.get("waterway"):                            return "waterway"
@@ -112,6 +153,7 @@ def _infra_chunks(elements: list[dict]) -> list[dict]:
         "name", "amenity", "power", "man_made", "operator",
         "addr:street", "addr:city", "phone", "emergency",
         "capacity", "beds", "voltage", "frequency", "landuse",
+        "highway", "ref", "waterway", "water", "bridge",
     ]
 
     for el in elements:
@@ -124,8 +166,23 @@ def _infra_chunks(elements: list[dict]) -> list[dict]:
         if category in _SKIP_CATEGORIES:
             continue
 
+        # Pomiń mosty o zerowym znaczeniu strategicznym (kładki, ścieżki, szlaki)
+        if category == "bridge" and tags.get("highway", "") in _SKIP_BRIDGE_HW:
+            continue
+
         lat, lon = coords
-        name = tags.get("name") or CATEGORY_LABELS.get(category, "Obiekt")
+
+        # Czytelna nazwa: własna > ref drogi > krótkie współrzędne
+        name_tag = tags.get("name", "").strip()
+        ref_tag  = tags.get("ref",  "").strip()
+        if name_tag:
+            name = name_tag
+        elif category == "bridge" and ref_tag:
+            name = f"Most {ref_tag}"
+        elif category == "bridge":
+            name = f"Most ({lat:.4f}°N, {lon:.4f}°E)"
+        else:
+            name = name_tag or CATEGORY_LABELS.get(category, "Obiekt")
 
         tag_lines = [f"{k}: {tags[k]}" for k in relevant_keys if k in tags]
 
@@ -136,6 +193,11 @@ def _infra_chunks(elements: list[dict]) -> list[dict]:
         )
         if tag_lines:
             text += "Szczegóły:\n  " + "\n  ".join(tag_lines) + "\n"
+
+        # Dla mostów: zróżnicowane znaczenie strategiczne + klasa drogi
+        if category == "bridge":
+            text += _bridge_importance(tags) + "\n"
+            text += "Zniszczenie lub zablokowanie tej przeprawy odcina ruch i dostęp do obszarów po drugiej stronie.\n"
 
         chunks.append({
             "id":       f"infra_{el['id']}",
@@ -404,7 +466,7 @@ def _index(chunks: list[dict], collection: chromadb.Collection, http: httpx.Clie
         collection.upsert(
             ids=[c["id"] for c in batch],
             documents=[c["text"] for c in batch],
-            embeddings=embeddings,
+            embeddings=embeddings,  # type: ignore
             metadatas=[c["metadata"] for c in batch],
         )
         done += len(batch)

@@ -34,6 +34,16 @@ def fetch_critical_infrastructure():
       way["man_made"="pipeline"]["substance"="water"]({bbox});
       way["railway"="rail"]({bbox});
       way["highway"="primary"]({bbox});
+      nwr["amenity"="school"]({bbox});
+      nwr["amenity"="university"]({bbox});
+      nwr["amenity"="college"]({bbox});
+      nwr["amenity"="town_hall"]({bbox});
+      nwr["office"="government"]({bbox});
+      nwr["building"="government"]({bbox});
+      nwr["building"="civic"]({bbox});
+      way["bridge"="yes"]["highway"]({bbox});
+      way["bridge"="yes"]["railway"]({bbox});
+      nwr["man_made"="bridge"]({bbox});
     );
     out center;
     """

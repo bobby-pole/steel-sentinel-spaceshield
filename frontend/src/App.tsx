@@ -2,8 +2,21 @@ import { useState } from "react";
 import { MapContainer } from "../containers/MapContainer";
 import { DocumentsContainer } from "../containers/DocumentsContainer";
 
+export interface HighlightLocation {
+  lat: number;
+  lon: number;
+  name: string;
+  category?: string;
+}
+
 export default function App() {
   const [currentView, setCurrentView] = useState<"map" | "documents">("map");
+  const [highlightLocation, setHighlightLocation] = useState<HighlightLocation | null>(null);
+
+  const handleShowOnMap = (loc: HighlightLocation) => {
+    setHighlightLocation(loc);
+    setCurrentView("map");
+  };
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
@@ -39,11 +52,14 @@ export default function App() {
             cursor: "pointer"
           }}
         >
-          Centrum dowodzenia        </button>
+          Centrum dowodzenia
+        </button>
       </header>
 
-      <main style={{ flex: 1, overflow: "hidden" }}>
-        {currentView === "map" ? <MapContainer /> : <DocumentsContainer />}
+      <main style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+        {currentView === "map"
+          ? <MapContainer highlightLocation={highlightLocation} onHighlightConsumed={() => setHighlightLocation(null)} />
+          : <DocumentsContainer onShowOnMap={handleShowOnMap} />}
       </main>
     </div>
   );
