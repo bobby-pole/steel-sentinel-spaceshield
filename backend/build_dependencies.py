@@ -28,6 +28,7 @@ OUTPUT_FILE         = Path(__file__).parent / "dependencies.json"
 # Progi przestrzenne (metry)
 LINE_TO_SUBSTATION_THRESHOLD_M  = 400   # maks. odległość linii od stacji
 SUBSTATION_TO_FACILITY_M        = 2500  # zasięg zasilania stacji
+WATER_SOURCE_TO_FACILITY_M      = 3000  # zasięg zasilania w wodę
 
 # Kategorie odbiorców krytycznych
 CRITICAL_TAGS = {
@@ -41,7 +42,7 @@ OVERPASS_ENDPOINTS = [
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass-api.de/api/interpreter",
 ]
-BATCH_SIZE = 1500   # węzłów na jedno zapytanie Overpass
+BATCH_SIZE = 500    # węzłów na jedno zapytanie Overpass
 
 
 # ---------------------------------------------------------------------------
@@ -110,19 +111,25 @@ def min_distance_point_to_polyline(
 # ---------------------------------------------------------------------------
 # Overpass — batch fetch współrzędnych węzłów
 # ---------------------------------------------------------------------------
-def overpass_query(query: str) -> dict:
-    headers = {
-        "Accept": "*/*",
-        "Content-Type": "application/x-www-form-urlencoded",
-    }
-    for url in OVERPASS_ENDPOINTS:
-        try:
-            resp = httpx.post(url, data={"data": query}, headers=headers, timeout=90)
-            if resp.status_code == 200:
-                return resp.json()
-            print(f"  {url} → HTTP {resp.status_code}")
-        except Exception as e:
-            print(f"  {url} → błąd: {e}")
+def overpass_query(query: str, retries: int = 3) -> dict:
+    headers = {"Accept": "*/*", "Content-Type": "application/x-www-form-urlencoded"}
+    for attempt in range(retries):
+        for url in OVERPASS_ENDPOINTS:
+            # Próbuj POST, przy błędzie fallback na GET
+            for method, kwargs in [
+                ("post", {"data": {"data": query}, "headers": headers}),
+                ("get",  {"params": {"data": query}}),
+            ]:
+                try:
+                    resp = getattr(httpx, method)(url, timeout=90, **kwargs)
+                    if resp.status_code == 200:
+                        return resp.json()
+                    print(f"  {url} {method.upper()} → HTTP {resp.status_code}")
+                except Exception as e:
+                    print(f"  {url} {method.upper()} → błąd: {e}")
+        wait = 15 * (attempt + 1)
+        print(f"  Retry {attempt + 1}/{retries - 1} za {wait}s…")
+        time.sleep(wait)
     raise RuntimeError("Wszystkie endpointy Overpass niedostępne")
 
 
@@ -141,7 +148,7 @@ def fetch_node_coords(node_ids: list[int]) -> dict[int, tuple[float, float]]:
             coords[el["id"]] = (el["lat"], el["lon"])
         print(f"✓ ({len(coords)} łącznie)")
         if batch_idx < total_batches - 1:
-            time.sleep(2)   # grzeczny wobec Overpass
+            time.sleep(5)   # grzeczny wobec Overpass
 
     return coords
 
@@ -182,20 +189,37 @@ def build_dependencies() -> None:
     power_lines  = [e for e in elements if e.get("tags", {}).get("power") == "line"]
     substations  = [e for e in elements if e.get("tags", {}).get("power") == "substation"]
     power_plants = [e for e in elements if e.get("tags", {}).get("power") == "plant"]
+    water_sources = [
+        e for e in elements 
+        if e.get("tags", {}).get("man_made") in ("water_works", "pumping_station", "water_tower")
+    ]
     facilities   = [
         e for e in elements
         if any(e.get("tags", {}).get(k) == v for k, v in CRITICAL_TAGS)
     ]
 
+    # Rurociągi i cieki wodne (tylko way — relation nie mają prostych "nodes")
+    water_pipe_elements = [
+        e for e in elements
+        if e.get("type") == "way" and (
+            e.get("tags", {}).get("waterway") in ("river", "canal") or
+            (e.get("tags", {}).get("man_made") == "pipeline" and
+             e.get("tags", {}).get("substance") == "water")
+        )
+    ]
+
     print(f"Załadowano: {len(power_lines)} linii, {len(substations)} stacji, "
-          f"{len(power_plants)} elektrowni, {len(facilities)} obiektów krytycznych\n")
+          f"{len(power_plants)} elektrowni, {len(water_sources)} źródeł wody, "
+          f"{len(water_pipe_elements)} rurociągów/cieków, {len(facilities)} obiektów krytycznych\n")
 
     # -----------------------------------------------------------------------
-    # Krok 1: Zbierz wszystkie node IDs z linii energetycznych
+    # Krok 1: Zbierz wszystkie node IDs — linie energetyczne + rurociągi wodne
     # -----------------------------------------------------------------------
     all_node_ids: list[int] = []
     for line in power_lines:
         all_node_ids.extend(line.get("nodes", []))
+    for wp in water_pipe_elements:
+        all_node_ids.extend(wp.get("nodes", []))
     all_node_ids = list(dict.fromkeys(all_node_ids))   # deduplikacja
 
     print(f"Krok 1: Pobieranie współrzędnych {len(all_node_ids)} węzłów…")
@@ -205,7 +229,7 @@ def build_dependencies() -> None:
     # -----------------------------------------------------------------------
     # Krok 2: Zbuduj geometrie linii
     # -----------------------------------------------------------------------
-    print("Krok 2: Budowanie geometrii linii…")
+    print("Krok 2: Budowanie geometrii linii energetycznych i rurociągów…")
     line_geometries: dict[int, list[list[float]]] = {}
     for line in power_lines:
         geom = []
@@ -214,7 +238,17 @@ def build_dependencies() -> None:
                 lat, lon = node_coords[nid]
                 geom.append([lat, lon])
         line_geometries[line["id"]] = geom
-    print(f"  Zbudowano geometrię dla {len(line_geometries)} linii\n")
+
+    water_pipe_geometries: dict[int, list[list[float]]] = {}
+    for wp in water_pipe_elements:
+        geom = []
+        for nid in wp.get("nodes", []):
+            if nid in node_coords:
+                lat, lon = node_coords[nid]
+                geom.append([lat, lon])
+        water_pipe_geometries[wp["id"]] = geom
+
+    print(f"  Linie energetyczne: {len(line_geometries)}, rurociągi/cieki: {len(water_pipe_geometries)}\n")
 
     # -----------------------------------------------------------------------
     # Krok 3: Analiza przestrzenna — linia → stacja
@@ -270,6 +304,34 @@ def build_dependencies() -> None:
 
     connected_subs = sum(1 for v in sub_to_facilities.values() if v)
     print(f"  {connected_subs} stacji z odbiorcami krytycznymi\n")
+
+    # -----------------------------------------------------------------------
+    # Krok 4b: Analiza przestrzenna — wodociągi → odbiorcy krytyczni
+    # -----------------------------------------------------------------------
+    print("Krok 4b: Analiza przestrzenna ujęcia wody → odbiorcy…")
+    # {water_id: [facility_id, ...]}
+    water_to_facilities: dict[int, list[int]] = {w["id"]: [] for w in water_sources}
+    # {facility_id: [water_id, ...]}
+    facility_to_water: dict[int, list[int]] = {f["id"]: [] for f in facilities}
+
+    for water in water_sources:
+        w_coords = get_coords(water)
+        if not w_coords:
+            continue
+        w_lat, w_lon = w_coords
+
+        for fac in facilities:
+            fac_coords = get_coords(fac)
+            if not fac_coords:
+                continue
+            f_lat, f_lon = fac_coords
+            dist = haversine(w_lat, w_lon, f_lat, f_lon)
+            if dist <= WATER_SOURCE_TO_FACILITY_M:
+                water_to_facilities[water["id"]].append(fac["id"])
+                facility_to_water[fac["id"]].append(water["id"])
+
+    connected_waters = sum(1 for v in water_to_facilities.values() if v)
+    print(f"  {connected_waters} źródeł wody z odbiorcami krytycznymi\n")
 
     # -----------------------------------------------------------------------
     # Krok 5: Nałóż manual_overrides.json
@@ -391,6 +453,43 @@ def build_dependencies() -> None:
             "lon":              f_lon,
             "category":         cat,
             "powered_by_substations": powered_by,
+            "supplied_by_water": facility_to_water.get(fac["id"], []),
+        })
+
+    water_zones = []
+    for water in water_sources:
+        w_coords = get_coords(water)
+        if not w_coords:
+            continue
+        w_lat, w_lon = w_coords
+        tags = water.get("tags", {})
+        supplied_facs = water_to_facilities.get(water["id"], [])
+        
+        water_zones.append({
+            "water_id":          water["id"],
+            "name":              tags.get("name", f"Węzeł wodny #{water['id']}"),
+            "lat":               w_lat,
+            "lon":               w_lon,
+            "type":              tags.get("man_made", "water_works"),
+            "supplies_facilities": supplied_facs,
+        })
+
+    water_pipes = []
+    for wp in water_pipe_elements:
+        geom = water_pipe_geometries.get(wp["id"], [])
+        if len(geom) < 2:
+            continue
+        tags = wp.get("tags", {})
+        wtype = (
+            "pipeline" if tags.get("man_made") == "pipeline" else
+            "canal"    if tags.get("waterway") == "canal"    else
+            "river"
+        )
+        water_pipes.append({
+            "pipe_id":  wp["id"],
+            "name":     tags.get("name", ""),
+            "type":     wtype,
+            "geometry": geom,
         })
 
     result = {
@@ -398,9 +497,12 @@ def build_dependencies() -> None:
         "thresholds": {
             "line_to_substation_m":  LINE_TO_SUBSTATION_THRESHOLD_M,
             "substation_to_facility_m": SUBSTATION_TO_FACILITY_M,
+            "water_source_to_facility_m": WATER_SOURCE_TO_FACILITY_M,
         },
         "power_chains":     power_chains,
         "substation_zones": substation_zones,
+        "water_zones":      water_zones,
+        "water_pipes":      water_pipes,
         "facility_deps":    facility_deps,
     }
 
@@ -409,7 +511,9 @@ def build_dependencies() -> None:
 
     print(f"\n✓ Zapisano {OUTPUT_FILE}")
     print(f"  {len(power_chains)} linii energetycznych z geometrią")
-    print(f"  {len(substation_zones)} stref zasilania")
+    print(f"  {len(substation_zones)} stref zasilania elektrycznego")
+    print(f"  {len(water_zones)} stref zasilania w wodę")
+    print(f"  {len(water_pipes)} rurociągów/cieków z geometrią")
     print(f"  {len(facility_deps)} obiektów krytycznych z zależnościami")
 
     # Podsumowanie pokrycia

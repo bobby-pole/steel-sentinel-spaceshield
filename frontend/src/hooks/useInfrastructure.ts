@@ -11,35 +11,45 @@ interface RawElement {
 }
 
 function classify(tags: Record<string, string>): InfraCategory {
-  if (tags.power === "plant")              return "power_plant";
-  if (tags.power === "substation")         return "substation";
-  if (tags.power === "line")               return "power_line";
-  if (tags.man_made === "water_works")     return "water_works";
-  if (tags.amenity === "hospital")         return "hospital";
-  if (tags.amenity === "fire_station")     return "fire_station";
-  if (tags.amenity === "police")           return "police";
-  if (tags.landuse === "industrial")       return "industrial";
-  if (tags.railway)                        return "railway";
-  if (tags.waterway)                       return "waterway";
-  if (tags.highway)                        return "highway";
+  if (tags.power === "plant")                         return "power_plant";
+  if (tags.power === "substation")                    return "substation";
+  if (tags.power === "line")                          return "power_line";
+  if (tags.man_made === "water_works")                return "water_works";
+  if (tags.man_made === "pumping_station")            return "pumping_station";
+  if (tags.man_made === "water_tower")                return "water_tower";
+  if (tags.man_made === "reservoir_covered")          return "reservoir";
+  if (tags.landuse  === "reservoir")                  return "reservoir";
+  if (tags.amenity === "hospital")                    return "hospital";
+  if (tags.amenity === "fire_station")                return "fire_station";
+  if (tags.amenity === "police")                      return "police";
+  if (tags.landuse === "industrial")                  return "industrial";
+  if (tags.railway)                                   return "railway";
+  // Rurociąg ciśnieniowy — odróżniamy od naturalnych cieków
+  if (tags.man_made === "pipeline" && tags.substance === "water") return "water_pipe";
+  if (tags.waterway)                                  return "waterway";
+  if (tags.highway)                                   return "highway";
   return "other";
 }
 
 function label(tags: Record<string, string>, category: InfraCategory): string {
   if (tags.name) return tags.name;
   const fallbacks: Record<InfraCategory, string> = {
-    power_plant:  "Elektrownia",
-    substation:   "Stacja transformatorowa",
-    power_line:   "Linia energetyczna",
-    water_works:  "Ujęcie wody",
-    hospital:     "Szpital",
-    fire_station: "Straż pożarna",
-    police:       "Policja",
-    industrial:   "Strefa przemysłowa",
-    railway:      "Kolej",
-    waterway:     "Droga wodna",
-    highway:      "Droga",
-    other:        "Obiekt",
+    power_plant:     "Elektrownia",
+    substation:      "Stacja transformatorowa",
+    power_line:      "Linia energetyczna",
+    water_works:     "Ujęcie wody / SUW",
+    pumping_station: "Pompownia wody",
+    water_tower:     "Wieżyczka ciśnień",
+    reservoir:       "Zbiornik wody",
+    water_pipe:      "Rurociąg ciśnieniowy",
+    hospital:        "Szpital",
+    fire_station:    "Straż pożarna",
+    police:          "Policja",
+    industrial:      "Strefa przemysłowa",
+    railway:         "Kolej",
+    waterway:        "Droga wodna",
+    highway:         "Droga",
+    other:           "Obiekt",
   };
   return fallbacks[category];
 }

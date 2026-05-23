@@ -13,11 +13,15 @@ def fetch_critical_infrastructure():
     # Zapytanie Overpass QL
     # node+way+relation (nwr) żeby nie pominąć dużych obiektów mapowanych jako obszary
     query = f"""
-    [out:json][timeout:60];
+    [out:json][timeout:90];
     (
       nwr["power"="plant"]({bbox});
       nwr["power"="substation"]({bbox});
       nwr["man_made"="water_works"]({bbox});
+      nwr["man_made"="pumping_station"]({bbox});
+      nwr["man_made"="water_tower"]({bbox});
+      nwr["man_made"="reservoir_covered"]({bbox});
+      nwr["landuse"="reservoir"]({bbox});
       nwr["amenity"="hospital"]({bbox});
       nwr["amenity"="fire_station"]({bbox});
       nwr["amenity"="police"]({bbox});
@@ -26,6 +30,8 @@ def fetch_critical_infrastructure():
       nwr["name"~"HSW|Huta|Stalowa",i]({bbox});
       way["power"="line"]({bbox});
       way["waterway"="river"]({bbox});
+      way["waterway"="canal"]({bbox});
+      way["man_made"="pipeline"]["substance"="water"]({bbox});
       way["railway"="rail"]({bbox});
       way["highway"="primary"]({bbox});
     );
@@ -48,7 +54,7 @@ def fetch_critical_infrastructure():
             resp = httpx.post(url, data={"data": query}, headers=headers, timeout=65)
             if resp.status_code == 200:
                 break
-            print(f"  {url} → HTTP {resp.status_code}, próba następnego...")
+            print(f"  {url} → HTTP {resp.status_code}, error: {resp.text[:200]}, próba następnego...")
         except Exception as e:
             print(f"  {url} → błąd: {e}, próba następnego...")
             resp = None

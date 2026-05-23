@@ -12,6 +12,7 @@ const COMMAND_ZONE_RADIUS = 500;
 
 const TILE_ONLINE  = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 const TILE_OFFLINE = "http://localhost:8000/tiles/{z}/{x}/{y}.png";
+const TILE_SENTINEL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
 
 const STATUS_COLORS: Record<Unit["status"], string> = {
   active: "#22c55e",
@@ -94,9 +95,15 @@ interface Props {
   activeCategories: Set<InfraCategory>;
   dependencyGraph:  DependencyGraph | null;
   showDeps:         boolean;
+  showWaterDeps:    boolean;
+  mapStyle?:        "osm" | "sentinel";
+  isAddingMode?:    boolean;
+  onMapClick?:      (lat: number, lng: number) => void;
+  onDeletePoint?:   (id: string) => void;
+  customPoints?:    import("../types").CustomPoint[];
 }
 
-export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOnline, infraItems, showInfra, activeCategories, dependencyGraph, showDeps }: Props) {
+export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOnline, infraItems, showInfra, activeCategories, dependencyGraph, showDeps, showWaterDeps, mapStyle = "sentinel", isAddingMode, onMapClick, onDeletePoint, customPoints = [] }: Props) {
   const containerRef    = useRef<HTMLDivElement>(null);
   const mapRef          = useRef<L.Map | null>(null);
   const markersRef      = useRef<Map<string, L.Marker>>(new Map());
@@ -106,6 +113,8 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
   const zoneRef          = useRef<L.Circle | null>(null);
   const tileLayerRef     = useRef<L.TileLayer | null>(null);
   const zoomHandlerRef   = useRef<(() => void) | null>(null);
+  const clickHandlerRef  = useRef<((e: L.LeafletMouseEvent) => void) | null>(null);
+  const customMarkersRef = useRef<L.LayerGroup | null>(null);
 
   // EFFECT 1: Inicjalizacja mapy + cluster groups
   useEffect(() => {
@@ -119,6 +128,7 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
     });
 
     mapRef.current = map;
+    customMarkersRef.current = L.layerGroup().addTo(map);
 
     // Utwórz jeden MarkerClusterGroup per kategoria z własnym stylem
     const categories = Object.keys(INFRA_CONFIG) as InfraCategory[];
@@ -166,7 +176,7 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
     };
   }, []);
 
-  // EFFECT 2: Przełączanie tile layer online ↔ offline
+  // EFFECT 2: Przełączanie tile layer online ↔ offline oraz style
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -175,13 +185,19 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
       map.removeLayer(tileLayerRef.current);
     }
 
-    const layer = L.tileLayer(isOnline ? TILE_ONLINE : TILE_OFFLINE, {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    let url = TILE_OFFLINE;
+    if (isOnline) {
+      url = mapStyle === "sentinel" ? TILE_SENTINEL : TILE_ONLINE;
+    }
+
+    const layer = L.tileLayer(url, {
+      attribution: mapStyle === "sentinel" ? '&copy; <a href="https://carto.com/attributions">CARTO</a>' : '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
       maxZoom: isOnline ? 19 : 17,
+      className: mapStyle === "sentinel" ? "sentinel-tiles-layer" : "",
     }).addTo(map);
 
     tileLayerRef.current = layer;
-  }, [isOnline]);
+  }, [isOnline, mapStyle]);
 
   // EFFECT 3: Aktualizacja markerów jednostek
   useEffect(() => {
@@ -337,7 +353,7 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
 
   }, [infraItems, showInfra, activeCategories]);
 
-  // EFFECT 7: Warstwa zależności energetycznych
+  // EFFECT 7: Warstwa zależności energetycznych i wodnych
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !dependencyGraph) return;
@@ -348,11 +364,73 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
     }
 
     if (showDeps) {
-      depLayerRef.current.show();
+      depLayerRef.current.showPower();
     } else {
-      depLayerRef.current.hide();
+      depLayerRef.current.hidePower();
     }
-  }, [dependencyGraph, showDeps]);
+
+    if (showWaterDeps) {
+      depLayerRef.current.showWater();
+    } else {
+      depLayerRef.current.hideWater();
+    }
+  }, [dependencyGraph, showDeps, showWaterDeps]);
+
+  // EFFECT 8: Obsługa kliknięć (dodawanie punktów)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (clickHandlerRef.current) {
+      map.off("click", clickHandlerRef.current);
+    }
+
+    if (isAddingMode && onMapClick) {
+      map.getContainer().style.cursor = "crosshair";
+      const handler = (e: L.LeafletMouseEvent) => {
+        onMapClick(e.latlng.lat, e.latlng.lng);
+      };
+      map.on("click", handler);
+      clickHandlerRef.current = handler;
+    } else {
+      map.getContainer().style.cursor = "";
+    }
+  }, [isAddingMode, onMapClick]);
+
+  // EFFECT 9: Renderowanie custom points
+  useEffect(() => {
+    const layer = customMarkersRef.current;
+    if (!layer) return;
+
+    layer.clearLayers();
+    for (const pt of customPoints) {
+      const marker = L.circleMarker([pt.lat, pt.lng], {
+        radius: 8,
+        color: "#10b981",
+        fillColor: "#10b981",
+        fillOpacity: 0.8,
+        weight: 2,
+      });
+
+      const popup = L.popup().setContent(`
+        <div style="font-family:system-ui,sans-serif;font-size:13px;color:#0f172a">
+          <strong style="color:#10b981">${pt.name}</strong><br/>
+          <span style="color:#64748b;font-size:11px">${pt.description}</span><br/><br/>
+          <button class="delete-btn" style="background:#ef4444;color:white;border:none;border-radius:4px;padding:4px 8px;cursor:pointer;font-weight:600;width:100%">🗑️ Usuń punkt</button>
+        </div>
+      `);
+
+      marker.bindPopup(popup);
+      marker.on("popupopen", (e) => {
+        const btn = e.popup.getElement()?.querySelector(".delete-btn");
+        if (btn && onDeletePoint) {
+          btn.addEventListener("click", () => onDeletePoint(pt.id));
+        }
+      });
+
+      layer.addLayer(marker);
+    }
+  }, [customPoints, onDeletePoint]);
 
   return <div ref={containerRef} style={{ height: "100%", width: "100%" }} />;
 }

@@ -2,8 +2,10 @@ import asyncio
 import os
 import random
 import math
+import json
 from typing import TypedDict
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -18,6 +20,17 @@ app.add_middleware(
 TILES_DIR = "map_tiles"
 if os.path.isdir(TILES_DIR):
     app.mount("/tiles", StaticFiles(directory=TILES_DIR), name="tiles")
+
+# Serwuj pliki danych bezpośrednio z backendu — nie trzeba ręcznie kopiować do frontend/public
+from fastapi.responses import FileResponse
+
+@app.get("/dependencies.json")
+async def get_dependencies():
+    return FileResponse("dependencies.json", media_type="application/json")
+
+@app.get("/infrastructure.json")
+async def get_infrastructure():
+    return FileResponse("infrastructure.json", media_type="application/json")
 
 STALOWA_WOLA = (50.56211528577714, 22.066128447186205)
 
@@ -35,8 +48,32 @@ UNITS: list[Unit] = [
     {"id": "charlie", "name": "Zespół Charlie",       "lat": STALOWA_WOLA[0] + 0.008, "lng": STALOWA_WOLA[1] + 0.008, "status": "idle",   "role": "engineer"},
     {"id": "delta",   "name": "Dron Delta",           "lat": STALOWA_WOLA[0] + 0.02,  "lng": STALOWA_WOLA[1],         "status": "active", "role": "recon"},
     {"id": "command", "name": "Punkt Dowodzenia",     "lat": STALOWA_WOLA[0],         "lng": STALOWA_WOLA[1],         "status": "active", "role": "command"},
+    {"id": "command", "name": "Punkt Dowodzenia",     "lat": STALOWA_WOLA[0],         "lng": STALOWA_WOLA[1],         "status": "active", "role": "command"},
 ]
 
+CUSTOM_POINTS_FILE = "custom_points.json"
+
+def load_custom_points():
+    if os.path.exists(CUSTOM_POINTS_FILE):
+        try:
+            with open(CUSTOM_POINTS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_custom_points(points):
+    with open(CUSTOM_POINTS_FILE, "w") as f:
+        json.dump(points, f)
+
+CUSTOM_POINTS = load_custom_points()
+
+class CustomPointModel(BaseModel):
+    id: str
+    lat: float
+    lng: float
+    name: str
+    description: str
 
 def move_units():
     for unit in UNITS:
@@ -107,3 +144,20 @@ async def check_alerts():
                 "status": unit["status"],
             })
     return alerts
+
+@app.get("/api/custom_points")
+async def get_custom_points():
+    return CUSTOM_POINTS
+
+@app.post("/api/custom_points")
+async def add_custom_point(point: CustomPointModel):
+    CUSTOM_POINTS.append(point.model_dump())
+    save_custom_points(CUSTOM_POINTS)
+    return {"ok": True}
+
+@app.delete("/api/custom_points/{point_id}")
+async def delete_custom_point(point_id: str):
+    global CUSTOM_POINTS
+    CUSTOM_POINTS = [p for p in CUSTOM_POINTS if p["id"] != point_id]
+    save_custom_points(CUSTOM_POINTS)
+    return {"ok": True}

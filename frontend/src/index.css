@@ -11,7 +11,12 @@ html, body, #root {
   color: #e2e8f0;
 }
 
-/* "Sentinel" Dark Mode Map Filter */
-.leaflet-tile {
-  filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
+/* Map container background */
+.leaflet-container {
+  background: #0f172a !important; /* Prevents white flashes during map pan */
+}
+
+.sentinel-tiles-layer {
+  /* Rozjaśnia ciemno-szarą mapę bazową, dodaje tonację i obraca w kierunku granatu */
+  filter: brightness(200%) sepia(80%) hue-rotate(185deg) saturate(250%) !important;
 }

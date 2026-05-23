@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useWebSocket } from "../src/hooks/useWebSocket";
 import { useOnlineStatus } from "../src/hooks/useOnlineStatus";
 import { useInfrastructure } from "../src/hooks/useInfrastructure";
@@ -28,6 +28,51 @@ export const MapContainer = () => {
     // Graf zależności energetycznych
     const { graph: dependencyGraph } = useDependencies();
     const [showDeps, setShowDeps] = useState(true);
+    const [showWaterDeps, setShowWaterDeps] = useState(true);
+    const [isAddingMode, setIsAddingMode] = useState(false);
+    const [customPoints, setCustomPoints] = useState<import("../src/types").CustomPoint[]>([]);
+
+    useEffect(() => {
+        fetch("http://localhost:8000/api/custom_points")
+            .then(r => r.json())
+            .then(data => setCustomPoints(data))
+            .catch(err => console.error("Error loading custom points", err));
+    }, []);
+
+    const [mapStyle, setMapStyle] = useState<"osm" | "sentinel">("sentinel");
+
+    const handleAddPoint = async (lat: number, lng: number) => {
+        const name = prompt("Podaj nazwę dla nowego punktu:");
+        if (name) {
+            const newPoint = {
+                id: `custom_${Date.now()}`,
+                lat,
+                lng,
+                name,
+                description: "Ręcznie dodany punkt",
+            };
+            try {
+                await fetch("http://localhost:8000/api/custom_points", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(newPoint),
+                });
+                setCustomPoints(prev => [...prev, newPoint]);
+            } catch (err) {
+                console.error("Failed to add point", err);
+            }
+        }
+        setIsAddingMode(false);
+    };
+
+    const handleDeletePoint = async (id: string) => {
+        try {
+            await fetch(`http://localhost:8000/api/custom_points/${id}`, { method: "DELETE" });
+            setCustomPoints(prev => prev.filter(p => p.id !== id));
+        } catch (err) {
+            console.error("Failed to delete point", err);
+        }
+    };
 
     const toggleCategory = (cat: InfraCategory) => {
         setActiveCategories((prev) => {
@@ -68,6 +113,12 @@ export const MapContainer = () => {
                     activeCategories={activeCategories}
                     dependencyGraph={dependencyGraph}
                     showDeps={showDeps}
+                    showWaterDeps={showWaterDeps}
+                    mapStyle={mapStyle}
+                    isAddingMode={isAddingMode}
+                    onMapClick={handleAddPoint}
+                    onDeletePoint={handleDeletePoint}
+                    customPoints={customPoints}
                 />
             </div>
 
@@ -83,23 +134,43 @@ export const MapContainer = () => {
                 {/* Nagłówek */}
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                     <h1 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>Crisis Command</h1>
-                    <span style={{
-                        fontSize: 11,
-                        fontWeight: 600,
-                        padding: "2px 8px",
-                        borderRadius: 4,
-                        background: isOnline ? "#16a34a22" : "#b4510022",
-                        color: isOnline ? "#4ade80" : "#fb923c",
-                        border: `1px solid ${isOnline ? "#4ade8044" : "#fb923c44"}`,
-                        letterSpacing: "0.05em",
-                    }}>
-                        {isOnline ? "ONLINE" : "OFFLINE"}
-                    </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <button
+                            onClick={() => setMapStyle(prev => prev === "sentinel" ? "osm" : "sentinel")}
+                            style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                padding: "2px 8px",
+                                borderRadius: 4,
+                                background: "#334155",
+                                color: "#e2e8f0",
+                                border: "1px solid #475569",
+                                cursor: "pointer",
+                                letterSpacing: "0.05em",
+                            }}
+                        >
+                            STYL: {mapStyle.toUpperCase()}
+                        </button>
+                        <span style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            padding: "2px 8px",
+                            borderRadius: 4,
+                            background: isOnline ? "#16a34a22" : "#b4510022",
+                            color: isOnline ? "#4ade80" : "#fb923c",
+                            border: `1px solid ${isOnline ? "#4ade8044" : "#fb923c44"}`,
+                            letterSpacing: "0.05em",
+                        }}>
+                            {isOnline ? "ONLINE" : "OFFLINE"}
+                        </span>
+                    </div>
                 </div>
 
                 <Controls
                     followMode={followMode}
                     onToggleFollow={() => setFollowMode(!followMode)}
+                    isAddingMode={isAddingMode}
+                    onToggleAddMode={() => setIsAddingMode(!isAddingMode)}
                 />
 
                 {/* Panel zależności energetycznych */}
@@ -140,6 +211,46 @@ export const MapContainer = () => {
                             {dependencyGraph.substation_zones.length} stacji
                             {" · "}
                             {dependencyGraph.facility_deps.filter(f => f.powered_by_substations.length > 0).length} obiektów zasilanych
+                        </div>
+                    )}
+                </div>
+
+                {/* Panel zależności wodociągowych */}
+                <div style={{
+                    background: showWaterDeps ? "#0ea5e910" : "transparent",
+                    border: `1px solid ${showWaterDeps ? "#0ea5e930" : "#33415544"}`,
+                    borderRadius: 8,
+                    padding: "10px 12px",
+                }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ fontSize: 14 }}>💧</span>
+                            <span style={{ fontSize: 13, fontWeight: 600, color: showWaterDeps ? "#e2e8f0" : "#64748b" }}>
+                                Sieć wodociągowa
+                            </span>
+                        </div>
+                        <button
+                            onClick={() => setShowWaterDeps((v) => !v)}
+                            style={{
+                                fontSize: 11,
+                                fontWeight: 700,
+                                padding: "2px 8px",
+                                borderRadius: 4,
+                                border: `1px solid ${showWaterDeps ? "#0ea5e944" : "#47556944"}`,
+                                background: showWaterDeps ? "#0ea5e922" : "transparent",
+                                color: showWaterDeps ? "#38bdf8" : "#64748b",
+                                cursor: "pointer",
+                                letterSpacing: "0.05em",
+                            }}
+                        >
+                            {showWaterDeps ? "WIDOCZNA" : "UKRYTA"}
+                        </button>
+                    </div>
+                    {showWaterDeps && dependencyGraph && (
+                        <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6, lineHeight: 1.5 }}>
+                            {dependencyGraph.water_pipes?.length || 0} rurociągów
+                            {" · "}
+                            {dependencyGraph.water_zones?.length || 0} stref wodociągowych
                         </div>
                     )}
                 </div>
