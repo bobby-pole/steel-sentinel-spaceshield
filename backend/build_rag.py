@@ -62,6 +62,48 @@ _SKIP_CATEGORIES = {"highway", "railway", "power_line", "waterway", "water_pipe"
 # Typy dróg bez znaczenia strategicznego — kładki, ścieżki, szlaki
 _SKIP_BRIDGE_HW = {"footway", "path", "cycleway", "track", "steps", "proposed", "construction", "pedestrian"}
 
+# Centrum Stalowej Woli
+_SW_LAT = 50.5621
+_SW_LON = 22.0661
+
+# Kluczowe mosty nad Sanem — hardkodowane opisy strategiczne
+_KEY_BRIDGES: dict[int, str] = {
+    50775355: (
+        "GŁÓWNA PRZEPRAWA nad rzeką San w Stalowej Woli (OSM #50775355).\n"
+        "Kluczowy węzeł komunikacyjny łączący Stalową Wolę z obszarami wschodnimi.\n"
+        "Jest to PRIORYTETOWY most — zniszczenie lub zablokowanie całkowicie odcina "
+        "miasto od strony wschodniej i uniemożliwia ruch na głównej trasie przez San.\n"
+        "Priorytet ochrony: KRYTYCZNY."
+    ),
+    33019891: (
+        "DRUGA PRZEPRAWA nad rzeką San w Stalowej Woli (OSM #33019891), "
+        "na północ od przeprawy głównej.\n"
+        "Ważna alternatywna trasa łącząca północną część miasta z obszarami "
+        "na wschód od Sanu.\n"
+        "Zniszczenie tej przeprawy poważnie utrudnia ruch i dostęp do obszarów "
+        "północno-wschodnich. Priorytet ochrony: WYSOKI."
+    ),
+}
+
+def _bridge_geo(lat: float, lon: float) -> str:
+    """Opis położenia mostu względem centrum SW."""
+    dlat = lat - _SW_LAT
+    dlon = lon - _SW_LON
+
+    ns = "północ" if dlat > 0.01 else ("południe" if dlat < -0.01 else None)
+    ew = "wschód" if dlon > 0.02 else ("zachód" if dlon < -0.02 else None)
+
+    if ns and ew:
+        direction = f"na {ns}-{ew} od centrum Stalowej Woli"
+    elif ns:
+        direction = f"na {ns} od centrum Stalowej Woli"
+    elif ew:
+        direction = f"na {ew} od centrum Stalowej Woli"
+    else:
+        direction = "w centrum Stalowej Woli"
+
+    return f"Położenie geograficzne: {direction}."
+
 def _bridge_importance(tags: dict) -> str:
     """Zwraca opis strategicznego znaczenia mostu na podstawie klasy drogi."""
     hw  = tags.get("highway", "")
@@ -194,10 +236,14 @@ def _infra_chunks(elements: list[dict]) -> list[dict]:
         if tag_lines:
             text += "Szczegóły:\n  " + "\n  ".join(tag_lines) + "\n"
 
-        # Dla mostów: zróżnicowane znaczenie strategiczne + klasa drogi
+        # Dla mostów: kluczowe mosty nad Sanem mają dedykowany opis, pozostałe generyczny
         if category == "bridge":
-            text += _bridge_importance(tags) + "\n"
-            text += "Zniszczenie lub zablokowanie tej przeprawy odcina ruch i dostęp do obszarów po drugiej stronie.\n"
+            osm_id = el["id"]
+            if osm_id in _KEY_BRIDGES:
+                text += _KEY_BRIDGES[osm_id] + "\n"
+            else:
+                text += _bridge_geo(lat, lon) + "\n"
+                text += _bridge_importance(tags) + "\n"
 
         chunks.append({
             "id":       f"infra_{el['id']}",
