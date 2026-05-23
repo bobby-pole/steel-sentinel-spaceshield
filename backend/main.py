@@ -1,9 +1,11 @@
 import asyncio
-import json
+import os
 import random
 import math
+from typing import TypedDict
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
 app.add_middleware(
@@ -13,9 +15,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-STALOWA_WOLA = (50.5826, 22.0533)
+TILES_DIR = "map_tiles"
+if os.path.isdir(TILES_DIR):
+    app.mount("/tiles", StaticFiles(directory=TILES_DIR), name="tiles")
 
-UNITS = [
+STALOWA_WOLA = (50.56211528577714, 22.066128447186205)
+
+class Unit(TypedDict):
+    id: str
+    name: str
+    lat: float
+    lng: float
+    status: str
+    role: str
+
+UNITS: list[Unit] = [
     {"id": "alpha",   "name": "Zespół Alpha",        "lat": STALOWA_WOLA[0] + 0.01,  "lng": STALOWA_WOLA[1] - 0.01,  "status": "active", "role": "recon"},
     {"id": "bravo",   "name": "Zespół Bravo",         "lat": STALOWA_WOLA[0] - 0.005, "lng": STALOWA_WOLA[1] + 0.015, "status": "active", "role": "medic"},
     {"id": "charlie", "name": "Zespół Charlie",       "lat": STALOWA_WOLA[0] + 0.008, "lng": STALOWA_WOLA[1] + 0.008, "status": "idle",   "role": "engineer"},

@@ -1,0 +1,39 @@
+{
+  "_comment": "Plik nadpisywania automatycznych zależności przestrzennych. Edytuj ręcznie i uruchom build_dependencies.py ponownie.",
+
+  "add_line_substation": [
+    {
+      "_example": true,
+      "line_id": 171222413,
+      "substation_id": 726776987,
+      "reason": "Potwierdzone na podstawie dokumentacji sieci"
+    }
+  ],
+
+  "remove_line_substation": [
+    {
+      "_example": true,
+      "line_id": 170255992,
+      "substation_id": 237105377,
+      "reason": "Linia tranzytowa – nie zasila tej stacji bezpośrednio"
+    }
+  ],
+
+  "add_substation_facility": [
+    {
+      "_example": true,
+      "substation_id": 726776987,
+      "facility_id": 187430937,
+      "reason": "Szpital bezpośrednio zasilany z tej stacji wg. PSP"
+    }
+  ],
+
+  "remove_substation_facility": [
+    {
+      "_example": true,
+      "substation_id": 248088250,
+      "facility_id": 187430937,
+      "reason": "Zasięg przestrzenny był fałszywy – brak faktycznego połączenia"
+    }
+  ]
+}

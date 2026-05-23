@@ -1,0 +1,16 @@
+# Mapy offline — za duże do repo (~333 MB)
+backend/map_tiles/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Node
+node_modules/
+
+# Env
+.env
+.env.local
+
+.claude

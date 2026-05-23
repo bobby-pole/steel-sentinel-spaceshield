@@ -10,3 +10,8 @@ html, body, #root {
   background: #0f172a;
   color: #e2e8f0;
 }
+
+/* "Sentinel" Dark Mode Map Filter */
+.leaflet-tile {
+  filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
+}

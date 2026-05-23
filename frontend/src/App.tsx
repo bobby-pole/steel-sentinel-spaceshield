@@ -1,7 +1,51 @@
-import { MapContainer } from "./components/MapContainer";
+import { useState } from "react";
+import { MapContainer } from "../containers/MapContainer";
+import { DocumentsContainer } from "../containers/DocumentsContainer";
 
 export default function App() {
+  const [currentView, setCurrentView] = useState<"map" | "documents">("map");
+
   return (
-    <MapContainer />
+    <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      <header style={{ 
+        padding: "1rem", 
+        background: "#1e293b", 
+        borderBottom: "1px solid #334155",
+        display: "flex",
+        gap: "1rem"
+      }}>
+        <h1 style={{ margin: 0, fontSize: "1.25rem", marginRight: "auto" }}>SpaceShield</h1>
+        <button 
+          onClick={() => setCurrentView("map")}
+          style={{
+            padding: "0.5rem 1rem",
+            background: currentView === "map" ? "#3b82f6" : "#334155",
+            color: "white",
+            border: "none",
+            borderRadius: "0.25rem",
+            cursor: "pointer"
+          }}
+        >
+          Mapa
+        </button>
+        <button 
+          onClick={() => setCurrentView("documents")}
+          style={{
+            padding: "0.5rem 1rem",
+            background: currentView === "documents" ? "#3b82f6" : "#334155",
+            color: "white",
+            border: "none",
+            borderRadius: "0.25rem",
+            cursor: "pointer"
+          }}
+        >
+          Dokumenty i AI
+        </button>
+      </header>
+      
+      <main style={{ flex: 1, overflow: "hidden" }}>
+        {currentView === "map" ? <MapContainer /> : <DocumentsContainer />}
+      </main>
+    </div>
   );
 }

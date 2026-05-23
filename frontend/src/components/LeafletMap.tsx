@@ -1,10 +1,17 @@
 import { useRef, useEffect } from "react";
 import L from "leaflet";
-import type { Unit } from "../types";
+import "leaflet.markercluster";
+import type { Unit, InfrastructureElement, InfraCategory, DependencyGraph } from "../types";
+import { createInfraIcon, createInfraPopup } from "./InfrastructureMarker";
+import { INFRA_CONFIG } from "../utils/infraConfig";
+import { initDependencyLayer, type DependencyLayerHandle } from "./DependencyLayer";
 
-const STALOWA_WOLA: L.LatLngExpression = [50.5826, 22.0533];
+const STALOWA_WOLA: L.LatLngExpression = [50.56211528577714, 22.066128447186205];
 const INITIAL_ZOOM = 14;
 const COMMAND_ZONE_RADIUS = 500;
+
+const TILE_ONLINE  = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+const TILE_OFFLINE = "http://localhost:8000/tiles/{z}/{x}/{y}.png";
 
 const STATUS_COLORS: Record<Unit["status"], string> = {
   active: "#22c55e",
@@ -77,42 +84,106 @@ function createPopupContent(unit: Unit): string {
 }
 
 interface Props {
-  units:        Unit[];
-  selectedUnit: string | null;
-  onSelectUnit: (id: string) => void;
-  followMode:   boolean;
+  units:            Unit[];
+  selectedUnit:     string | null;
+  onSelectUnit:     (id: string) => void;
+  followMode:       boolean;
+  isOnline:         boolean;
+  infraItems:       InfrastructureElement[];
+  showInfra:        boolean;
+  activeCategories: Set<InfraCategory>;
+  dependencyGraph:  DependencyGraph | null;
+  showDeps:         boolean;
 }
 
-export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const mapRef       = useRef<L.Map | null>(null);
-  const markersRef   = useRef<Map<string, L.Marker>>(new Map());
-  const zoneRef      = useRef<L.Circle | null>(null);
+export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOnline, infraItems, showInfra, activeCategories, dependencyGraph, showDeps }: Props) {
+  const containerRef    = useRef<HTMLDivElement>(null);
+  const mapRef          = useRef<L.Map | null>(null);
+  const markersRef      = useRef<Map<string, L.Marker>>(new Map());
+  const clusterGroupsRef = useRef<Map<InfraCategory, L.MarkerClusterGroup>>(new Map());
+  const infraMarkersRef  = useRef<Map<number, { marker: L.Marker; category: InfraCategory }>>(new Map());
+  const depLayerRef      = useRef<DependencyLayerHandle | null>(null);
+  const zoneRef          = useRef<L.Circle | null>(null);
+  const tileLayerRef     = useRef<L.TileLayer | null>(null);
+  const zoomHandlerRef   = useRef<(() => void) | null>(null);
 
-  // EFFECT 1: Inicjalizacja mapy — uruchamia się RAZ
+  // EFFECT 1: Inicjalizacja mapy + cluster groups
   useEffect(() => {
     if (!containerRef.current) return;
 
     const map = L.map(containerRef.current, {
       center: STALOWA_WOLA,
       zoom:   INITIAL_ZOOM,
+      // Preferuj canvas renderer – szybszy przy wielu markerach
+      renderer: L.canvas(),
     });
 
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-      maxZoom: 19,
-    }).addTo(map);
-
     mapRef.current = map;
+
+    // Utwórz jeden MarkerClusterGroup per kategoria z własnym stylem
+    const categories = Object.keys(INFRA_CONFIG) as InfraCategory[];
+    for (const cat of categories) {
+      const cfg = INFRA_CONFIG[cat];
+      const group = L.markerClusterGroup({
+        maxClusterRadius: 60,
+        disableClusteringAtZoom: 16,
+        spiderfyOnMaxZoom: true,
+        zoomToBoundsOnClick: true,
+        iconCreateFunction: (cluster) => {
+          const count = cluster.getChildCount();
+          const size  = count < 10 ? 30 : count < 50 ? 36 : 42;
+          return L.divIcon({
+            className: "",
+            iconSize:   [size, size],
+            iconAnchor: [size / 2, size / 2],
+            html: `<div style="
+              width:${size}px;height:${size}px;
+              background:#0f172aee;
+              border:2px solid ${cfg.color}aa;
+              border-radius:50%;
+              display:flex;align-items:center;justify-content:center;
+              color:${cfg.color};font-size:${size * 0.35}px;font-weight:700;
+              box-shadow:0 0 0 3px ${cfg.color}22;
+            ">${count}</div>`,
+          });
+        },
+      });
+      clusterGroupsRef.current.set(cat, group);
+    }
+
+    const markers       = markersRef.current;
+    const infraMarkers  = infraMarkersRef.current;
+    const clusterGroups = clusterGroupsRef.current;
 
     return () => {
       map.remove();
       mapRef.current = null;
-      markersRef.current.clear();
+      markers.clear();
+      infraMarkers.clear();
+      clusterGroups.clear();
+      depLayerRef.current?.destroy();
+      depLayerRef.current = null;
     };
   }, []);
 
-  // EFFECT 2: Aktualizacja markerów
+  // EFFECT 2: Przełączanie tile layer online ↔ offline
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (tileLayerRef.current) {
+      map.removeLayer(tileLayerRef.current);
+    }
+
+    const layer = L.tileLayer(isOnline ? TILE_ONLINE : TILE_OFFLINE, {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      maxZoom: isOnline ? 19 : 17,
+    }).addTo(map);
+
+    tileLayerRef.current = layer;
+  }, [isOnline]);
+
+  // EFFECT 3: Aktualizacja markerów jednostek
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -151,7 +222,7 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode }: Pr
     }
   }, [units, selectedUnit, onSelectUnit]);
 
-  // EFFECT 3: Strefa geofencingu wokół command
+  // EFFECT 4: Strefa geofencingu wokół command
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -174,7 +245,7 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode }: Pr
     zoneRef.current = zone;
   }, [units]);
 
-  // EFFECT 4: Follow mode
+  // EFFECT 5: Follow mode
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !followMode || !selectedUnit) return;
@@ -187,6 +258,101 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode }: Pr
       duration: 0.3,
     });
   }, [units, selectedUnit, followMode]);
+
+  // EFFECT 6: Warstwa infrastruktury krytycznej z clusteringiem + zoom-gating
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    const clusterGroups = clusterGroupsRef.current;
+    const infraMarkers  = infraMarkersRef.current;
+
+    // Funkcja przebudowująca widoczność cluster groups względem aktualnego zoom
+    const syncInfraVisibility = () => {
+      if (!mapRef.current) return;
+      const currentZoom = mapRef.current.getZoom();
+
+      for (const [cat, group] of clusterGroups) {
+        const cfg     = INFRA_CONFIG[cat];
+        const visible = showInfra && activeCategories.has(cat) && currentZoom >= cfg.minZoom;
+
+        if (visible && !mapRef.current.hasLayer(group)) {
+          group.addTo(mapRef.current);
+        } else if (!visible && mapRef.current.hasLayer(group)) {
+          mapRef.current.removeLayer(group);
+        }
+      }
+    };
+
+    // Usuń stary zoom handler jeśli istnieje
+    if (zoomHandlerRef.current) {
+      map.off("zoomend", zoomHandlerRef.current);
+    }
+    map.on("zoomend", syncInfraVisibility);
+    zoomHandlerRef.current = syncInfraVisibility;
+
+    // Wyczyść markery kategorii które zostały odznaczone/ukryte
+    for (const [id, { marker, category }] of infraMarkers) {
+      const visible = showInfra && activeCategories.has(category);
+      if (!visible) {
+        const group = clusterGroups.get(category);
+        if (group) group.removeLayer(marker);
+        infraMarkers.delete(id);
+      }
+    }
+
+    if (!showInfra) {
+      // Usuń wszystkie cluster groups z mapy
+      for (const group of clusterGroups.values()) {
+        if (map.hasLayer(group)) map.removeLayer(group);
+      }
+      return;
+    }
+
+    // Dodaj brakujące markery do odpowiednich grup
+    for (const el of infraItems) {
+      if (!activeCategories.has(el.category)) continue;
+      if (infraMarkers.has(el.id)) continue;
+
+      const lat = el.lat;
+      const lon = el.lon;
+      if (lat === undefined || lon === undefined) continue;
+
+      const group = clusterGroups.get(el.category);
+      if (!group) continue;
+
+      const marker = L.marker([lat, lon], {
+        icon: createInfraIcon(el),
+        zIndexOffset: -200,
+      });
+      marker.bindPopup(createInfraPopup(el), { maxWidth: 280 });
+      marker.bindTooltip(el.label, { direction: "top", offset: [0, -18] });
+      group.addLayer(marker);
+
+      infraMarkers.set(el.id, { marker, category: el.category });
+    }
+
+    // Synchronizuj widoczność grup z aktualnym zoom
+    syncInfraVisibility();
+
+  }, [infraItems, showInfra, activeCategories]);
+
+  // EFFECT 7: Warstwa zależności energetycznych
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !dependencyGraph) return;
+
+    // Inicjalizuj layer przy pierwszym załadowaniu grafu
+    if (!depLayerRef.current) {
+      depLayerRef.current = initDependencyLayer(map, dependencyGraph);
+    }
+
+    if (showDeps) {
+      depLayerRef.current.show();
+    } else {
+      depLayerRef.current.hide();
+    }
+  }, [dependencyGraph, showDeps]);
 
   return <div ref={containerRef} style={{ height: "100%", width: "100%" }} />;
 }
