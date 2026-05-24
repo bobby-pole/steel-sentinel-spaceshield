@@ -182,12 +182,14 @@ const THREAT_OPTIONS = [
   { value: "chemical", label: "Chemiczny" },
 ];
 
-function createCriticalPopup(objectId: string, obj: CriticalObject, loadingId: string | null): string {
+function createCriticalPopup(objectId: string, obj: CriticalObject, loadingId: string | null, allObjects: Record<string, CriticalObject> = {}): string {
   const cfg = CRITICAL_TYPE[obj.type] ?? { color: "#64748b", icon: `<circle cx="8" cy="7" r="3.5" stroke="currentColor" stroke-width="1.5"/><line x1="8" y1="10.5" x2="8" y2="14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>` };
   const vulns = obj.vulnerability.join(", ");
   const defense = (obj.defense ?? []).join(", ") || "brak danych";
   const isLoading = loadingId === objectId;
   const defaultThreat = obj.vulnerability[0] || "drone";
+  const powersNames = (obj.powers ?? []).map(id => allObjects[id]?.name ?? id);
+  const depsNames = (obj.dependencies ?? []).map(id => allObjects[id]?.name ?? id);
 
   const threatOptions = THREAT_OPTIONS.map(t =>
     `<option value="${t.value}"${t.value === defaultThreat ? " selected" : ""}>${t.label}</option>`
@@ -209,6 +211,8 @@ function createCriticalPopup(objectId: string, obj: CriticalObject, loadingId: s
         <tr><td style="color:#64748b;padding:2px 6px 2px 0">Podatności</td><td style="color:#fca5a5">${vulns}</td></tr>
         <tr><td style="color:#64748b;padding:2px 6px 2px 0">Ochrona</td><td style="color:#28a355">${defense}</td></tr>
         ${obj.protection_recommended?.length ? `<tr><td style="color:#64748b;padding:2px 6px 2px 0;vertical-align:top;white-space:nowrap">Rekomendowane</td><td style="color:#64748b;font-size:10px">${obj.protection_recommended.join("<br/>")}</td></tr>` : ""}
+        ${powersNames.length ? `<tr><td style="color:#64748b;padding:2px 6px 2px 0;vertical-align:top;white-space:nowrap">⚡ Zasila</td><td style="color:#22c55e;font-size:10px">${powersNames.join("<br/>")}</td></tr>` : ""}
+        ${depsNames.length ? `<tr><td style="color:#64748b;padding:2px 6px 2px 0;vertical-align:top;white-space:nowrap">🔌 Zależy od</td><td style="color:#f97316;font-size:10px">${depsNames.join("<br/>")}</td></tr>` : ""}
       </table>
       <select
         class="threat-type-select"
@@ -280,6 +284,8 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
   const criticalMarkersRef = useRef<Map<string, L.Marker>>(new Map());
   const corridorsLayerRef = useRef<L.LayerGroup | null>(null);
   const impactLinesRef = useRef<L.LayerGroup | null>(null);
+  const critDepLinesRef = useRef<L.LayerGroup | null>(null);
+  const selectedCritIdRef = useRef<string | null>(null);
 
   // Refs kept current every render — safe to read inside event handlers.
   // Updated in useLayoutEffect (runs synchronously after commit, before paint)
@@ -306,6 +312,7 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
 
     mapRef.current = map;
     customMarkersRef.current = L.layerGroup().addTo(map);
+    critDepLinesRef.current = L.layerGroup().addTo(map);
 
     // Utwórz jeden MarkerClusterGroup per kategoria z własnym stylem
     const categories = Object.keys(INFRA_CONFIG) as InfraCategory[];
@@ -353,6 +360,8 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
       criticalMarkersRef.current.clear();
       corridorsLayerRef.current = null;
       impactLinesRef.current = null;
+      critDepLinesRef.current = null;
+      selectedCritIdRef.current = null;
     };
   }, []);
 
@@ -843,15 +852,51 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
       if (existing) {
         // Odśwież popup przy zmianie loadingScenarioId
         const popup = existing.getPopup();
-        if (popup) popup.setContent(createCriticalPopup(objectId, obj, loadingScenarioId ?? null));
+        if (popup) popup.setContent(createCriticalPopup(objectId, obj, loadingScenarioId ?? null, criticalObjects));
       } else {
         const marker = L.marker([obj.lat, obj.lng], {
           icon: createCriticalIcon(obj, objectId, status),
           zIndexOffset: 500,
         });
 
-        marker.bindPopup(createCriticalPopup(objectId, obj, null), { maxWidth: 260 });
+        marker.bindPopup(createCriticalPopup(objectId, obj, null, criticalObjects), { maxWidth: 260 });
         marker.bindTooltip(`${obj.name} (kryt. ${obj.criticality}/5)`, { direction: "top", offset: [0, -18] });
+
+        marker.on("click", () => {
+          const linesLayer = critDepLinesRef.current;
+          if (!linesLayer) return;
+          linesLayer.clearLayers();
+
+          if (selectedCritIdRef.current === objectId) {
+            selectedCritIdRef.current = null;
+            return;
+          }
+          selectedCritIdRef.current = objectId;
+
+          const objs = criticalObjectsRef.current;
+          const src = objs[objectId];
+          if (!src) return;
+
+          const drawDep = (fromLat: number, fromLng: number, toLat: number, toLng: number, color: string, label: string) => {
+            L.polyline([[fromLat, fromLng], [toLat, toLng]], {
+              color, weight: 2, opacity: 0.85, interactive: false,
+            }).addTo(linesLayer);
+            L.circleMarker([toLat, toLng], {
+              radius: 6, color, fillColor: color, fillOpacity: 0.55, weight: 2, interactive: false,
+            }).bindTooltip(label, { permanent: false, direction: "top", offset: [0, -8] }).addTo(linesLayer);
+          };
+
+          // Zasilane przez ten obiekt — zielony
+          for (const targetId of src.powers ?? []) {
+            const t = objs[targetId];
+            if (t) drawDep(src.lat, src.lng, t.lat, t.lng, "#22c55e", `⚡ ${t.name}`);
+          }
+          // Ten obiekt zależy od — pomarańczowy
+          for (const depId of src.dependencies ?? []) {
+            const d = objs[depId];
+            if (d) drawDep(d.lat, d.lng, src.lat, src.lng, "#f97316", `🔌 ${d.name}`);
+          }
+        });
 
         marker.on("popupopen", (e) => {
           const btn = e.popup.getElement()?.querySelector(".simulate-attack-btn");
