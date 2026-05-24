@@ -480,6 +480,9 @@ RAG_OLLAMA_URL  = "http://localhost:11434"
 RAG_EMBED_MODEL = "bge-m3"
 RAG_GEN_MODEL   = "SpeakLeash/bielik-minitron-7B-v3.0-instruct:Q4_K_M"
 
+_TECH_DOC_PATH = Path(__file__).parent.parent / "docs" / "technologie-obronne.md"
+TECH_DOC = _TECH_DOC_PATH.read_text(encoding="utf-8") if _TECH_DOC_PATH.exists() else ""
+
 _chroma_client = None
 _chroma_lock   = asyncio.Lock()
 
@@ -867,6 +870,13 @@ Odpowiedz na pytania operacyjne (każde działanie zaczynając od "- "):
 ## ROZKAZ OPERACYJNY
 Sformułuj krótki rozkaz (2-3 zdania) dla jednostki {nearest_unit['name']}.
 
+## TECHNOLOGIE OCHRONNE
+Na podstawie dokumentu poniżej wymień 2-3 konkretne systemy które zmniejszyłyby zagrożenie {threat_type} dla {obj['name']}.
+Format każdego systemu w osobnej linii zaczynającej się od "- ": nazwa i krótkie uzasadnienie (1 zdanie).
+
+DOKUMENT TECH-OBR-2026:
+{TECH_DOC}
+
 ODPOWIEDŹ:"""
 
     answer = ""
@@ -891,6 +901,7 @@ ODPOWIEDŹ:"""
     scenario = ""
     recommendations: list[str] = []
     order = ""
+    protection_recommended: list[str] = []
 
     if "## SCENARIUSZ" in answer or "## REKO" in answer or "## ROZKAZ" in answer:
         for part in answer.split("##"):
@@ -906,21 +917,33 @@ ODPOWIEDŹ:"""
                 ]
             elif part.upper().startswith("ROZKAZ"):
                 order = part.split("\n", 1)[-1].strip()
+            elif part.upper().startswith("TECHNOLOGIE"):
+                tech_block = part.split("\n", 1)[-1].strip()
+                protection_recommended = [
+                    r.lstrip("- ").strip()
+                    for r in tech_block.splitlines()
+                    if r.strip().startswith("-")
+                ]
 
     if not scenario:
         scenario = answer  # fallback
 
+    # Zapisz rekomendowane technologie w grafie (persist na czas sesji)
+    if protection_recommended:
+        INFRASTRUCTURE[object_id]["protection_recommended"] = protection_recommended
+
     return {
-        "object_id":       object_id,
-        "object_name":     obj["name"],
-        "threat_type":     threat_type,
-        "impact":          impact,
-        "scenario":        scenario,
-        "recommendations": recommendations,
-        "order":           order,
-        "raw_response":    answer,
-        "rag_chunks_used": len(context_chunks),
-        "rag_sources":     rag_sources,
+        "object_id":              object_id,
+        "object_name":            obj["name"],
+        "threat_type":            threat_type,
+        "impact":                 impact,
+        "scenario":               scenario,
+        "recommendations":        recommendations,
+        "order":                  order,
+        "raw_response":           answer,
+        "rag_chunks_used":        len(context_chunks),
+        "rag_sources":            rag_sources,
+        "protection_recommended": protection_recommended,
     }
 
 

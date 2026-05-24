@@ -1,4 +1,4 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useLayoutEffect } from "react";
 import L from "leaflet";
 import "leaflet.markercluster";
 import type { Unit, InfrastructureElement, InfraCategory, DependencyGraph, CriticalObject, ImpactResult } from "../types";
@@ -174,10 +174,10 @@ function createCriticalIcon(obj: CriticalObject, _objectId: string, status: Impa
 }
 
 const THREAT_OPTIONS = [
-  { value: "drone",    label: "Dron/UAV" },
-  { value: "missile",  label: "Rakieta" },
+  { value: "drone", label: "Dron/UAV" },
+  { value: "missile", label: "Rakieta" },
   { value: "sabotage", label: "Sabotaż" },
-  { value: "cyber",    label: "Cyber" },
+  { value: "cyber", label: "Cyber" },
   { value: "chemical", label: "Chemiczny" },
 ];
 
@@ -207,6 +207,7 @@ function createCriticalPopup(objectId: string, obj: CriticalObject, loadingId: s
         <tr><td style="color:#64748b;padding:2px 6px 2px 0;white-space:nowrap">Zapas zasilania</td><td>${obj.backup_power_hours}h</td></tr>
         <tr><td style="color:#64748b;padding:2px 6px 2px 0">Podatności</td><td style="color:#fca5a5">${vulns}</td></tr>
         <tr><td style="color:#64748b;padding:2px 6px 2px 0">Ochrona</td><td style="color:#28a355">${defense}</td></tr>
+        ${obj.protection_recommended?.length ? `<tr><td style="color:#64748b;padding:2px 6px 2px 0;vertical-align:top;white-space:nowrap">Rekomendowane</td><td style="color:#64748b;font-size:10px">${obj.protection_recommended.join("<br/>")}</td></tr>` : ""}
       </table>
       <select
         class="threat-type-select"
@@ -277,6 +278,19 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
   const highlightMarkerRef = useRef<L.Marker | null>(null);
   const criticalMarkersRef = useRef<Map<string, L.Marker>>(new Map());
   const corridorsLayerRef = useRef<L.LayerGroup | null>(null);
+  const impactLinesRef = useRef<L.LayerGroup | null>(null);
+
+  // Refs kept current every render — safe to read inside event handlers.
+  // Updated in useLayoutEffect (runs synchronously after commit, before paint)
+  // to comply with React 19's ban on ref mutation during render.
+  const criticalObjectsRef = useRef(criticalObjects);
+  const onSimulateAttackRef = useRef(onSimulateAttack);
+  const dependencyGraphRef = useRef(dependencyGraph);
+  useLayoutEffect(() => {
+    criticalObjectsRef.current = criticalObjects;
+    onSimulateAttackRef.current = onSimulateAttack;
+    dependencyGraphRef.current = dependencyGraph;
+  });
 
   // EFFECT 1: Inicjalizacja mapy + cluster groups
   useEffect(() => {
@@ -337,6 +351,7 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
       depLayerRef.current = null;
       criticalMarkersRef.current.clear();
       corridorsLayerRef.current = null;
+      impactLinesRef.current = null;
     };
   }, []);
 
@@ -530,6 +545,55 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
               mapRef.current.removeLayer(waterRadiusRef.current);
               waterRadiusRef.current = null;
             }
+          });
+        }
+
+        // Energy infrastructure: hover shows supply connections
+        if (el.category === "power_plant" || el.category === "substation" || el.category === "power_line") {
+          marker.on("mouseover", () => depLayerRef.current?.highlightOsmId(el.id, true));
+          marker.on("mouseout", () => depLayerRef.current?.highlightOsmId(el.id, false));
+        }
+
+        // Power plant / substation: add simulate attack button
+        if (el.category === "power_plant" || el.category === "substation") {
+          const attackHtml = `
+            <div style="margin-top:8px">
+              <select class="infra-threat-select" style="width:100%;margin-bottom:6px;padding:5px 6px;
+                background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:4px;
+                font-family:system-ui,sans-serif;font-size:11px;cursor:pointer;">
+                <option value="drone">Dron/UAV</option>
+                <option value="missile">Rakieta</option>
+                <option value="sabotage">Sabotaż</option>
+                <option value="cyber">Cyber</option>
+                <option value="chemical">Chemiczny</option>
+              </select>
+              <button class="infra-simulate-btn" style="width:100%;padding:7px;
+                background:#7f1d1d;color:#fecaca;border:1px solid #ef444488;border-radius:4px;
+                cursor:pointer;font-family:'Courier New',monospace;font-size:11px;font-weight:700;
+                letter-spacing:0.1em;">[ SYMULUJ ATAK ]</button>
+            </div>`;
+          marker.setPopupContent(createInfraPopup(el) + attackHtml);
+
+          marker.on("popupopen", (e) => {
+            const btn = e.popup.getElement()?.querySelector(".infra-simulate-btn");
+            if (!btn) return;
+            btn.addEventListener("click", () => {
+              const sel = e.popup.getElement()?.querySelector(".infra-threat-select") as HTMLSelectElement | null;
+              const threatType = sel?.value ?? "drone";
+              // Find nearest energy critical object
+              const objs = criticalObjectsRef.current;
+              let bestId: string | null = null;
+              let bestDist = Infinity;
+              for (const [id, obj] of Object.entries(objs)) {
+                if (obj.type !== "energy") continue;
+                const d = Math.hypot(obj.lat - lat, obj.lng - lon);
+                if (d < bestDist) { bestDist = d; bestId = id; }
+              }
+              if (bestId) {
+                onSimulateAttackRef.current?.(bestId, threatType);
+                marker.closePopup();
+              }
+            });
           });
         }
 
@@ -809,6 +873,13 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
       if (obj) marker.setIcon(createCriticalIcon(obj, id, "normal"));
     }
 
+    // Reset dependency layer and impact lines
+    depLayerRef.current?.clearImpact();
+    if (impactLinesRef.current) {
+      map.removeLayer(impactLinesRef.current);
+      impactLinesRef.current = null;
+    }
+
     if (!impactResult) return;
 
     const paint = (ids: string[], status: ImpactStatus) => {
@@ -828,6 +899,65 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
     paint(impactResult.immediate, "immediate");
     paint(impactResult.cascade_4h, "cascade_4h");
     paint(impactResult.cascade_8h, "cascade_8h");
+
+    // Recolor dependency-layer substations/lines that power affected facilities
+    const dg = dependencyGraphRef.current;
+    if (dg) {
+      const allImpacted = [
+        impactResult.attacked_id,
+        ...impactResult.immediate,
+        ...impactResult.cascade_4h,
+        ...impactResult.cascade_8h,
+      ];
+      const facIds: number[] = [];
+      for (const strId of allImpacted) {
+        const obj = criticalObjects[strId];
+        if (!obj) continue;
+        let best: typeof dg.facility_deps[0] | null = null;
+        let bestDist = Infinity;
+        for (const fac of dg.facility_deps) {
+          const d = Math.hypot(fac.lat - obj.lat, fac.lon - obj.lng);
+          if (d < bestDist) { bestDist = d; best = fac; }
+        }
+        if (best && bestDist < 0.02) facIds.push(best.facility_id);
+      }
+      depLayerRef.current?.setImpactedFacilities(facIds);
+    }
+
+    // Draw impact lines from attacked object to each dependent object
+    const src = criticalObjects[impactResult.attacked_id];
+    if (src) {
+      const linesLayer = L.layerGroup();
+
+      const drawLines = (ids: string[], color: string) => {
+        for (const id of ids) {
+          const dep = criticalObjects[id];
+          if (!dep) continue;
+          L.polyline([[src.lat, src.lng], [dep.lat, dep.lng]], {
+            color,
+            weight: 1.5,
+            opacity: 0.75,
+            dashArray: "5 4",
+            interactive: false,
+          }).addTo(linesLayer);
+          L.circleMarker([dep.lat, dep.lng], {
+            radius: 5,
+            color,
+            fillColor: color,
+            fillOpacity: 0.55,
+            weight: 1.5,
+            interactive: false,
+          }).addTo(linesLayer);
+        }
+      };
+
+      drawLines(impactResult.immediate, "#ef4444");
+      drawLines(impactResult.cascade_4h, "#f97316");
+      drawLines(impactResult.cascade_8h, "#eab308");
+
+      linesLayer.addTo(map);
+      impactLinesRef.current = linesLayer;
+    }
   }, [impactResult, criticalObjects]);
 
   // EFFECT 13: Dynamic attack corridors — tied to simulations
@@ -845,44 +975,41 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
     const layer = L.layerGroup();
 
     for (const corridor of dynamicCorridors) {
-      const style  = THREAT_STYLE[corridor.threatType] ?? THREAT_STYLE.drone;
-      const sevCol = SEVERITY_COLOR[corridor.severity] ?? style.color;
+      const style = THREAT_STYLE[corridor.threatType] ?? THREAT_STYLE.drone;
+      const sevCol = SEVERITY_COLOR[corridor.severity] ?? "#ef4444";
       const isActive = corridor.active;
-      const lineCol  = isActive ? style.color : style.color;
+      const lineCol = "#ef4444";
 
-      // ── Polyline ──
+      // ── Polyline — solid red ──
       L.polyline(corridor.coords, {
-        color:     lineCol,
-        weight:    isActive ? style.weight - 0.5 : style.weight,
-        opacity:   isActive ? 0.50 : 0.80,
-        dashArray: isActive ? "4 8" : style.dash,
+        color: lineCol,
+        weight: 3,
+        opacity: isActive ? 0.65 : 0.90,
       }).addTo(layer);
 
-      // ── Bearing arrows (completed only) ──
-      if (!isActive) {
-        for (let i = 0; i < corridor.coords.length - 1; i++) {
-          const p1 = corridor.coords[i];
-          const p2 = corridor.coords[i + 1];
-          const mid: [number, number] = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
-          const bearing = getBearing(p1, p2);
-          L.marker(mid, {
-            icon: L.divIcon({
-              className: "",
-              iconSize: [14, 14],
-              iconAnchor: [7, 7],
-              html: `<div style="
-                width:0;height:0;
-                border-left:5px solid transparent;
-                border-right:5px solid transparent;
-                border-bottom:10px solid ${lineCol};
-                transform:rotate(${bearing}deg);
-                transform-origin:50% 65%;
-                opacity:0.9;
-              "></div>`,
-            }),
-            interactive: false,
-          }).addTo(layer);
-        }
+      // ── Bearing arrows — always shown ──
+      for (let i = 0; i < corridor.coords.length - 1; i++) {
+        const p1 = corridor.coords[i];
+        const p2 = corridor.coords[i + 1];
+        const mid: [number, number] = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2];
+        const bearing = getBearing(p1, p2);
+        L.marker(mid, {
+          icon: L.divIcon({
+            className: "",
+            iconSize: [14, 14],
+            iconAnchor: [7, 7],
+            html: `<div style="
+              width:0;height:0;
+              border-left:5px solid transparent;
+              border-right:5px solid transparent;
+              border-bottom:10px solid ${lineCol};
+              transform:rotate(${bearing}deg);
+              transform-origin:50% 65%;
+              opacity:${isActive ? 0.65 : 0.9};
+            "></div>`,
+          }),
+          interactive: false,
+        }).addTo(layer);
       }
 
       // ── Origin label ──

@@ -80,6 +80,9 @@ export interface DependencyLayerHandle {
   hidePower: () => void;
   showWater: () => void;
   hideWater: () => void;
+  highlightOsmId: (osmId: number, show: boolean) => void;
+  setImpactedFacilities: (facilityIds: number[]) => void;
+  clearImpact: () => void;
 }
 
 export function initDependencyLayer(
@@ -632,6 +635,42 @@ export function initDependencyLayer(
     showFacilityConnections(origin.lat, origin.lon, line.feeds_facilities, "#facc15");
   };
 
-  return { show, hide, destroy, setHighlight, showPower, hidePower, showWater, hideWater };
+  const highlightOsmId = (osmId: number, show: boolean) => {
+    const circle = subCircles.get(osmId);
+    if (!circle) return;
+    if (show) {
+      circle.setStyle({ color: "#facc15", fillColor: "#facc15", fillOpacity: 0.3, weight: 3 });
+      const sub = substationIndex.get(osmId);
+      if (sub) showFacilityConnections(sub.lat, sub.lon, sub.powers_facilities);
+    } else {
+      circle.setStyle({ color: "#fb923c", fillColor: "#fb923c", fillOpacity: 0.15, weight: 2 });
+      clearFacilityConnections();
+    }
+  };
+
+  const clearImpact = () => {
+    for (const sub of graph.substation_zones) {
+      subCircles.get(sub.substation_id)?.setStyle({ color: "#fb923c", fillColor: "#fb923c", fillOpacity: 0.15, weight: 2 });
+    }
+    for (const line of graph.power_chains) {
+      linePolylines.get(line.line_id)?.setStyle({ color: voltageColor(line.voltage), weight: voltageWeight(line.voltage), opacity: 0.75 });
+    }
+  };
+
+  const setImpactedFacilities = (facilityIds: number[]) => {
+    clearImpact();
+    const affSet = new Set(facilityIds);
+    for (const sub of graph.substation_zones) {
+      if (!sub.powers_facilities.some(fid => affSet.has(fid))) continue;
+      subCircles.get(sub.substation_id)?.setStyle({ color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.4, weight: 3 });
+      for (const line of graph.power_chains) {
+        if (line.feeds_substations.includes(sub.substation_id)) {
+          linePolylines.get(line.line_id)?.setStyle({ color: "#ef4444", weight: voltageWeight(line.voltage) + 1, opacity: 0.9 });
+        }
+      }
+    }
+  };
+
+  return { show, hide, destroy, setHighlight, showPower, hidePower, showWater, hideWater, highlightOsmId, setImpactedFacilities, clearImpact };
 }
 

@@ -23,7 +23,24 @@ export default function App() {
   const pushLog = (entry: Omit<LogEntry, "id" | "time">) => {
     const now = new Date();
     const time = now.toLocaleTimeString("pl-PL", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    setLogEntries(prev => [...prev, { ...entry, id: `${Date.now()}-${Math.random()}`, time }]);
+    const newEntry = { ...entry, id: `${Date.now()}-${Math.random()}`, time };
+
+    if (entry.type === "result" || entry.type === "error") {
+      const resolution: "success" | "error" = entry.type === "result" ? "success" : "error";
+      setLogEntries(prev => {
+        let marked = false;
+        const updated = prev.map(e => {
+          if (!marked && e.type === "start" && e.objectName === entry.objectName && !e.resolved) {
+            marked = true;
+            return { ...e, resolved: resolution };
+          }
+          return e;
+        });
+        return [...updated, newEntry];
+      });
+    } else {
+      setLogEntries(prev => [...prev, newEntry]);
+    }
   };
 
   const handleShowOnMap = (loc: HighlightLocation) => {

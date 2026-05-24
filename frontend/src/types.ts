@@ -124,16 +124,17 @@ export interface CustomPoint {
 // Infrastruktura krytyczna (named graf)
 // ---------------------------------------------------------------------------
 export interface CriticalObject {
-  name:               string;
-  type:               string;
-  lat:                number;
-  lng:                number;
-  criticality:        number;
-  backup_power_hours: number;
-  powers:             string[];
-  dependencies:       string[];
-  vulnerability:      string[];
-  defense:            string[];
+  name:                    string;
+  type:                    string;
+  lat:                     number;
+  lng:                     number;
+  criticality:             number;
+  backup_power_hours:      number;
+  powers:                  string[];
+  dependencies:            string[];
+  vulnerability:           string[];
+  defense:                 string[];
+  protection_recommended?: string[];
 }
 
 export interface ImpactResult {
@@ -150,14 +151,15 @@ export interface ImpactResult {
 }
 
 export interface ThreatScenarioResult {
-  object_id:       string;
-  object_name:     string;
-  threat_type:     string;
-  impact:          ImpactResult;
-  scenario:        string;
-  recommendations: string[];
-  order:           string;
-  raw_response:    string;
-  rag_chunks_used: number;
-  rag_sources:     string[];
+  object_id:               string;
+  object_name:             string;
+  threat_type:             string;
+  impact:                  ImpactResult;
+  scenario:                string;
+  recommendations:         string[];
+  order:                   string;
+  raw_response:            string;
+  rag_chunks_used:         number;
+  rag_sources:             string[];
+  protection_recommended?: string[];
 }

@@ -108,6 +108,13 @@ export const MapContainer = ({ highlightLocation, onHighlightConsumed, pushLog, 
                             : c
                     ));
                 }
+                // Persist recommended protection into the object
+                if (data.protection_recommended?.length) {
+                    onCriticalObjectsLoaded({
+                        ...criticalObjects,
+                        [objectId]: { ...criticalObjects[objectId], protection_recommended: data.protection_recommended },
+                    });
+                }
                 pushLog({ type: "result", objectName: objName, threatType, result: data });
             } else {
                 if (corridorId) {

@@ -9,6 +9,7 @@ export interface LogEntry {
   threatType?: string;
   message?: string;
   result?: ThreatScenarioResult;
+  resolved?: "success" | "error";
 }
 
 interface Props {
@@ -63,7 +64,36 @@ export function OperationLogOverlay({ entries, criticalObjects, onClear, variant
   // In panel mode always render (column is always visible)
   if (variant === "float" && entries.length === 0) return null;
 
-  const isRunning = entries[entries.length - 1]?.type === "start";
+  const lastEntry = entries[entries.length - 1];
+  const isRunning = lastEntry?.type === "start";
+  const isFinished = lastEntry?.type === "result";
+
+  /** JSX helper — NOT a component, just returns markup (no hooks) */
+  const statusDot = isRunning ? (
+    <span style={{
+      width: 7, height: 7, borderRadius: "50%",
+      background: "#f97316",
+      flexShrink: 0,
+      animation: "op-blink 1s ease-in-out infinite",
+      display: "inline-block",
+    }} />
+  ) : isFinished ? (
+    <span style={{
+      width: 7, height: 7, borderRadius: "50%",
+      background: "#166534",
+      flexShrink: 0,
+      display: "inline-block",
+      boxShadow: "0 0 5px #22c55e88",
+    }} />
+  ) : null;
+
+  const statusLabel = isRunning
+    ? "Analizuj\u0119 kaskad\u0119\u2026 (do 120s)"
+    : isFinished
+      ? "Symulacja zako\u0144czona"
+      : null;
+
+  const statusColor = isRunning ? "#f97316" : isFinished ? "#4ade80" : "#64748b";
 
   // Panel mode: fill the parent column, no fixed positioning
   if (variant === "panel") {
@@ -81,16 +111,13 @@ export function OperationLogOverlay({ entries, criticalObjects, onClear, variant
           gap: 8,
         }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {isRunning && (
-              <div style={{
-                width: 6, height: 6, borderRadius: "50%",
-                background: "#ef4444",
-                animation: "pulse 1s ease-in-out infinite",
-                flexShrink: 0,
-              }} />
-            )}
-            <span style={{ fontSize: 10, fontWeight: 700, color: "#64748b", letterSpacing: "0.08em" }}>
-              LOG · {entries.length} wpisów
+            {statusDot}
+            <span style={{
+              fontSize: 10, fontWeight: 700,
+              color: isRunning ? "#f97316" : isFinished ? "#4ade80" : "#64748b",
+              letterSpacing: "0.08em",
+            }}>
+              {statusLabel ?? `LOG · ${entries.length} wpisów`}
             </span>
           </div>
           {entries.length > 0 && (
@@ -150,19 +177,15 @@ export function OperationLogOverlay({ entries, criticalObjects, onClear, variant
         gap: 8,
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {isRunning && (
-            <span style={{
-              width: 6, height: 6, borderRadius: "50%",
-              background: "#f97316",
-              flexShrink: 0,
-              animation: "op-blink 1s ease-in-out infinite",
-            }} />
-          )}
+          {statusDot}
           <span style={{
-            fontSize: 10, fontWeight: 700, color: "#64748b",
-            letterSpacing: "0.1em", fontFamily: "'Courier New', monospace",
+            fontSize: 10, fontWeight: 700,
+            color: statusColor,
+            letterSpacing: "0.1em",
+            fontFamily: "'Courier New', monospace",
+            transition: "color 0.3s",
           }}>
-            LOG OPERACYJNY
+            {statusLabel ?? "LOG OPERACYJNY"}
           </span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -231,17 +254,29 @@ function EntryRow({
           <div style={{ ...fontMono, fontSize: 10, color: "#94a3b8" }}>
             {entry.objectName}
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
-            <span style={{
-              width: 5, height: 5, borderRadius: "50%",
-              background: "#f97316",
-              animation: "op-blink 1s ease-in-out infinite",
-              flexShrink: 0,
-            }} />
-            <span style={{ ...fontMono, fontSize: 9, color: "#64748b" }}>
-              Analizuję kaskadę… (do 120s)
-            </span>
-          </div>
+          {entry.resolved === "success" ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+              <span style={{ color: "#22c55e", fontSize: 11, lineHeight: 1 }}>✓</span>
+              <span style={{ ...fontMono, fontSize: 9, color: "#22c55e" }}>Zakończono</span>
+            </div>
+          ) : entry.resolved === "error" ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+              <span style={{ color: "#ef4444", fontSize: 11, lineHeight: 1 }}>✗</span>
+              <span style={{ ...fontMono, fontSize: 9, color: "#ef4444" }}>Błąd symulacji</span>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+              <span style={{
+                width: 5, height: 5, borderRadius: "50%",
+                background: "#f97316",
+                animation: "op-blink 1s ease-in-out infinite",
+                flexShrink: 0,
+              }} />
+              <span style={{ ...fontMono, fontSize: 9, color: "#64748b" }}>
+                Analizuję kaskadę… (do 120s)
+              </span>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -333,6 +368,26 @@ function EntryRow({
           )}
         </div>
       )}
+
+      {/* Recommended protection technologies */}
+      {r.protection_recommended?.length ? (
+        <div style={{
+          marginTop: 5,
+          background: "rgba(6,182,212,0.06)",
+          border: "1px solid rgba(6,182,212,0.2)",
+          borderRadius: 4,
+          padding: "4px 6px",
+        }}>
+          <div style={{ ...fontMono, fontSize: 9, fontWeight: 700, color: "#18b6cfff", marginBottom: 3, letterSpacing: "0.06em" }}>
+            ⚙ TECHNOLOGIE OCHRONNE
+          </div>
+          {r.protection_recommended.map((tech, i) => (
+            <div key={i} style={{ ...fontMono, fontSize: 9, color: "#18b6cfff", marginBottom: 1 }}>
+              · {tech}
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
