@@ -4,6 +4,7 @@ import re
 import random
 import math
 import json
+import time
 from collections import deque
 from pathlib import Path
 from typing import TypedDict, Optional
@@ -12,6 +13,9 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import httpx
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
 
 app = FastAPI()
 app.add_middleware(
@@ -710,6 +714,198 @@ async def _index_document_bg(filepath: Path, filename: str) -> None:
 @app.get("/api/rag/status")
 async def rag_status():
     return _indexing_state
+
+
+# ---------------------------------------------------------------------------
+# Satelitarne kafelki — pobieranie offline i serwowanie
+# ---------------------------------------------------------------------------
+
+SATELLITE_TILES_DIR = Path(__file__).parent / "satellite_tiles" / "s2"
+
+# Stalowa Wola + bufor ~8 km
+_SAT_BBOX = {"lat_min": 50.49, "lat_max": 50.67, "lng_min": 21.91, "lng_max": 22.24}
+_SAT_ZOOM_DEFAULT = (10, 17)
+
+# ---------------------------------------------------------------------------
+# Sentinel Hub (CDSE) — OAuth2 token cache + Process API
+# ---------------------------------------------------------------------------
+_SH_CLIENT_ID     = os.getenv("SH_CLIENT_ID", "")
+_SH_CLIENT_SECRET = os.getenv("SH_CLIENT_SECRET", "")
+_SH_TOKEN_URL     = "https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
+_SH_PROCESS_URL   = "https://sh.dataspace.copernicus.eu/api/v1/process"
+
+_sh_token: dict = {"access_token": "", "expires_at": 0.0}
+_sh_token_lock = asyncio.Lock()
+
+_SH_EVALSCRIPT = """
+//VERSION=3
+function setup() {
+  return { input: ["B04","B03","B02"], output: { bands: 3 } };
+}
+function evaluatePixel(s) {
+  return [3.5*s.B04, 3.5*s.B03, 3.5*s.B02];
+}
+"""
+
+
+async def _sh_get_token() -> str:
+    async with _sh_token_lock:
+        if time.time() < _sh_token["expires_at"] - 30:
+            return _sh_token["access_token"]
+        async with httpx.AsyncClient(timeout=15) as http:
+            r = await http.post(_SH_TOKEN_URL, data={
+                "grant_type": "client_credentials",
+                "client_id": _SH_CLIENT_ID,
+                "client_secret": _SH_CLIENT_SECRET,
+            })
+            r.raise_for_status()
+            data = r.json()
+            _sh_token["access_token"] = data["access_token"]
+            _sh_token["expires_at"] = time.time() + data.get("expires_in", 600)
+            return _sh_token["access_token"]
+
+
+def _tile_to_bbox(z: int, x: int, y: int) -> tuple[float, float, float, float]:
+    """Returns (lng_min, lat_min, lng_max, lat_max) in WGS84."""
+    n = 2 ** z
+    lng_min = x / n * 360.0 - 180.0
+    lng_max = (x + 1) / n * 360.0 - 180.0
+    lat_max = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * y / n))))
+    lat_min = math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * (y + 1) / n))))
+    return lng_min, lat_min, lng_max, lat_max
+
+
+async def _fetch_sentinel_tile(z: int, x: int, y: int) -> bytes | None:
+    if not _SH_CLIENT_ID or not _SH_CLIENT_SECRET:
+        return None
+    try:
+        token = await _sh_get_token()
+        lng_min, lat_min, lng_max, lat_max = _tile_to_bbox(z, x, y)
+        payload = {
+            "input": {
+                "bounds": {
+                    "bbox": [lng_min, lat_min, lng_max, lat_max],
+                    "properties": {"crs": "http://www.opengis.net/def/crs/OGC/1.3/CRS84"},
+                },
+                "data": [{
+                    "type": "sentinel-2-l2a",
+                    "dataFilter": {"mosaickingOrder": "leastCC"},
+                }],
+            },
+            "output": {
+                "width": 256, "height": 256,
+                "responses": [{"identifier": "default", "format": {"type": "image/jpeg", "quality": 85}}],
+            },
+            "evalscript": _SH_EVALSCRIPT,
+        }
+        async with httpx.AsyncClient(timeout=20) as http:
+            r = await http.post(
+                _SH_PROCESS_URL,
+                json=payload,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if r.status_code == 200:
+                return r.content
+    except Exception:
+        pass
+    return None
+
+_satellite_state: dict = {"running": False, "total": 0, "done": 0, "errors": 0}
+
+
+def _deg2tile(lat: float, lon: float, zoom: int) -> tuple[int, int]:
+    n = 2 ** zoom
+    x = int((lon + 180) / 360 * n)
+    lat_r = math.radians(lat)
+    y = int((1 - math.log(math.tan(lat_r) + 1 / math.cos(lat_r)) / math.pi) / 2 * n)
+    return x, max(0, min(n - 1, y))
+
+
+async def _download_satellite_bg(zoom_min: int, zoom_max: int, force: bool) -> None:
+    global _satellite_state
+    SATELLITE_TILES_DIR.mkdir(parents=True, exist_ok=True)
+
+    tiles: list[tuple[int, int, int]] = []
+    bb = _SAT_BBOX
+    for z in range(zoom_min, zoom_max + 1):
+        n = 2 ** z
+        x_min, y_north = _deg2tile(bb["lat_max"], bb["lng_min"], z)
+        x_max, y_south = _deg2tile(bb["lat_min"], bb["lng_max"], z)
+        x_min = max(0, x_min); x_max = min(n - 1, x_max)
+        for x in range(x_min, x_max + 1):
+            for y in range(y_north, y_south + 1):
+                tiles.append((z, x, y))
+
+    _satellite_state.update({"total": len(tiles), "done": 0, "errors": 0})
+    sem = asyncio.Semaphore(6)
+
+    async def fetch_one(z: int, x: int, y: int) -> None:
+        path = SATELLITE_TILES_DIR / str(z) / str(x) / f"{y}.jpg"
+        if not force and path.exists():
+            _satellite_state["done"] += 1
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        async with sem:
+            try:
+                data = await _fetch_sentinel_tile(z, x, y)
+                if data:
+                    path.write_bytes(data)
+                else:
+                    _satellite_state["errors"] += 1
+            except Exception:
+                _satellite_state["errors"] += 1
+        _satellite_state["done"] += 1
+
+    await asyncio.gather(*[fetch_one(z, x, y) for z, x, y in tiles])
+
+    _satellite_state["running"] = False
+
+
+@app.get("/api/tiles/satellite/status")
+async def satellite_status():
+    tile_count = sum(1 for _ in SATELLITE_TILES_DIR.rglob("*.jpg")) if SATELLITE_TILES_DIR.exists() else 0
+    return {
+        **_satellite_state,
+        "tile_count": tile_count,
+        "available": tile_count > 0,
+        "sentinel_configured": bool(_SH_CLIENT_ID and _SH_CLIENT_SECRET),
+    }
+
+
+@app.post("/api/tiles/satellite/start")
+async def satellite_start(
+    background_tasks: BackgroundTasks,
+    zoom_min: int = _SAT_ZOOM_DEFAULT[0],
+    zoom_max: int = _SAT_ZOOM_DEFAULT[1],
+    force: bool = False,
+):
+    if _satellite_state["running"]:
+        return {"error": "Pobieranie już trwa"}
+    _satellite_state.update({"running": True, "total": 0, "done": 0, "errors": 0})
+    background_tasks.add_task(_download_satellite_bg, zoom_min, zoom_max, force)
+    return {"ok": True}
+
+
+async def _serve_tile(path: Path, data: bytes) -> FileResponse:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return FileResponse(str(path), media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/satellite/{z}/{x}/{y}.jpg")
+async def get_satellite_tile(z: int, x: int, y: int):
+    path = SATELLITE_TILES_DIR / str(z) / str(x) / f"{y}.jpg"
+
+    if path.exists():
+        return FileResponse(str(path), media_type="image/jpeg",
+                            headers={"Cache-Control": "public, max-age=86400"})
+
+    data = await _fetch_sentinel_tile(z, x, y)
+    if data:
+        return await _serve_tile(path, data)
+
+    return JSONResponse(status_code=404, content={"error": "Tile not available"})
 
 
 # ---------------------------------------------------------------------------

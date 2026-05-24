@@ -1,5 +1,7 @@
 # Mapy offline — za duże do repo (~333 MB)
 backend/map_tiles/
+backend/satellite_tiles/
+tech_docs/
 
 # Baza wektorowa RAG — za duża do repo
 backend/chroma/

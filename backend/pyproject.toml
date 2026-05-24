@@ -10,4 +10,5 @@ dependencies = [
     "chromadb>=1.5.9",
     "pypdf>=6.12.0",
     "python-multipart>=0.0.29",
+    "python-dotenv>=1.0.0",
 ]

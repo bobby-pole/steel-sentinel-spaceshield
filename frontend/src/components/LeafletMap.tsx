@@ -20,9 +20,10 @@ const WATER_SUPPLY_RADIUS: Partial<Record<import("../types").InfraCategory, numb
   reservoir: 2000,
 };
 
-const TILE_ONLINE = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
-const TILE_OFFLINE = "http://localhost:8000/tiles/{z}/{x}/{y}.png";
+const TILE_ONLINE   = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+const TILE_OFFLINE  = "http://localhost:8000/tiles/{z}/{x}/{y}.png";
 const TILE_SENTINEL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
+const TILE_SAT_S2   = "http://localhost:8000/satellite/{z}/{x}/{y}.jpg";
 
 const STATUS_COLORS: Record<Unit["status"], string> = {
   active: "#22c55e",
@@ -246,7 +247,7 @@ interface Props {
   activeCategories: Set<InfraCategory>;
   dependencyGraph: DependencyGraph | null;
   showDeps: boolean;
-  mapStyle?: "osm" | "sentinel";
+  mapStyle?: "osm" | "sentinel" | "s2";
   isAddingMode?: boolean;
   onMapClick?: (lat: number, lng: number) => void;
   onDeletePoint?: (id: string) => void;
@@ -365,15 +366,27 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
     }
 
     let url = TILE_OFFLINE;
-    if (isOnline) {
-      url = mapStyle === "sentinel" ? TILE_SENTINEL : TILE_ONLINE;
+    let attribution = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
+    let className = "";
+    let maxZoom = isOnline ? 19 : 17;
+
+    if (mapStyle === "s2") {
+      url = TILE_SAT_S2;
+      attribution = "© Copernicus / ESA, Sentinel-2";
+      maxZoom = 17;
+    } else if (isOnline) {
+      if (mapStyle === "sentinel") {
+        url = TILE_SENTINEL;
+        attribution = '&copy; <a href="https://carto.com/attributions">CARTO</a>';
+        className = "sentinel-tiles-layer";
+      } else {
+        url = TILE_ONLINE;
+      }
     }
 
-    const layer = L.tileLayer(url, {
-      attribution: mapStyle === "sentinel" ? '&copy; <a href="https://carto.com/attributions">CARTO</a>' : '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-      maxZoom: isOnline ? 19 : 17,
-      className: mapStyle === "sentinel" ? "sentinel-tiles-layer" : "",
-    }).addTo(map);
+    const maxNativeZoom = mapStyle === "s2" ? 14 : maxZoom;
+    const layer = L.tileLayer(url, { attribution, maxZoom, maxNativeZoom, className }).addTo(map);
+    map.setMaxZoom(mapStyle === "s2" ? 14 : maxZoom);
 
     tileLayerRef.current = layer;
   }, [isOnline, mapStyle]);

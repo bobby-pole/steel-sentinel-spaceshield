@@ -18,14 +18,14 @@ import type { LogEntry } from "../src/components/OperationLogOverlay";
 const ALL_CATEGORIES = Object.keys(INFRA_CONFIG) as InfraCategory[];
 
 interface MapContainerProps {
-  highlightLocation?: HighlightLocation | null;
-  onHighlightConsumed?: () => void;
-  // Lifted state from App for persistence across views
-  logEntries?: LogEntry[]; // unused in MapContainer but kept for future use
-  pushLog: (entry: Omit<LogEntry, "id" | "time">) => void;
-  criticalObjects: Record<string, CriticalObject>;
-  onCriticalObjectsLoaded: (data: Record<string, CriticalObject>) => void;
-  onClearLog?: () => void;
+    highlightLocation?: HighlightLocation | null;
+    onHighlightConsumed?: () => void;
+    // Lifted state from App for persistence across views
+    logEntries?: LogEntry[]; // unused in MapContainer but kept for future use
+    pushLog: (entry: Omit<LogEntry, "id" | "time">) => void;
+    criticalObjects: Record<string, CriticalObject>;
+    onCriticalObjectsLoaded: (data: Record<string, CriticalObject>) => void;
+    onClearLog?: () => void;
 }
 
 export const MapContainer = ({ highlightLocation, onHighlightConsumed, pushLog, criticalObjects, onCriticalObjectsLoaded }: MapContainerProps) => {
@@ -54,13 +54,42 @@ export const MapContainer = ({ highlightLocation, onHighlightConsumed, pushLog, 
             .catch(err => console.error("Error loading custom points", err));
     }, []);
 
-    const [mapStyle, setMapStyle] = useState<"osm" | "sentinel">("sentinel");
+    const [mapStyle, setMapStyle] = useState<"osm" | "sentinel" | "s2">("sentinel");
+
+    type SatStatus = { running: boolean; total: number; done: number; errors: number; tile_count: number; available: boolean };
+    const [satStatus, setSatStatus] = useState<SatStatus | null>(null);
+
+    const fetchSatStatus = useCallback(async () => {
+        try {
+            const r = await fetch("http://localhost:8000/api/tiles/satellite/status");
+            if (r.ok) setSatStatus(await r.json());
+        } catch { /* offline */ }
+    }, []);
+
+    useEffect(() => {
+        const initStatus = async () => {
+            await fetchSatStatus();
+        };
+        initStatus();
+    }, [fetchSatStatus]);
+
+    useEffect(() => {
+        if (!satStatus?.running) return;
+        const id = setInterval(fetchSatStatus, 1200);
+        return () => clearInterval(id);
+    }, [satStatus?.running, fetchSatStatus]);
+
+    const startSatDownload = async (force = false) => {
+        setSatStatus(prev => prev ? { ...prev, running: true } : null);
+        await fetch(`http://localhost:8000/api/tiles/satellite/start?force=${force}`, { method: "POST" });
+        fetchSatStatus();
+    };
 
     // --- Infrastruktura krytyczna (named graf) ---
     // criticalObjects & logEntries are owned by App — received as props
-    const [threatResult, setThreatResult]       = useState<ThreatScenarioResult | null>(null);
+    const [threatResult, setThreatResult] = useState<ThreatScenarioResult | null>(null);
     const [loadingScenarioId, setLoadingScenarioId] = useState<string | null>(null);
-    const [showCorridors, setShowCorridors]     = useState(false);
+    const [showCorridors, setShowCorridors] = useState(false);
     const [dynamicCorridors, setDynamicCorridors] = useState<DynamicCorridor[]>([]);
 
     useEffect(() => {
@@ -68,12 +97,12 @@ export const MapContainer = ({ highlightLocation, onHighlightConsumed, pushLog, 
             .then(r => r.json())
             .then(data => onCriticalObjectsLoaded(data))
             .catch(err => console.error("Błąd ładowania infrastruktury krytycznej:", err));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const handleSimulateAttack = useCallback(async (objectId: string, threatType: string = "drone") => {
         if (loadingScenarioId) return;
-        const obj     = criticalObjects[objectId];
+        const obj = criticalObjects[objectId];
         const objName = obj?.name ?? objectId;
 
         // Compute attack corridor immediately and show it
@@ -136,7 +165,7 @@ export const MapContainer = ({ highlightLocation, onHighlightConsumed, pushLog, 
         } finally {
             setLoadingScenarioId(null);
         }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [loadingScenarioId, criticalObjects]);
 
     const impactResult: ImpactResult | null = threatResult?.impact ?? null;
@@ -298,24 +327,48 @@ export const MapContainer = ({ highlightLocation, onHighlightConsumed, pushLog, 
 
                 {/* Nagłówek */}
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <h1 style={{ fontSize: 18, fontWeight: 700, margin: 0 }}>Crisis Command</h1>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                         <button
-                            onClick={() => setMapStyle(prev => prev === "sentinel" ? "osm" : "sentinel")}
+                            onClick={() => setMapStyle(prev =>
+                                prev === "sentinel" ? "s2"
+                                    : prev === "s2" ? "osm"
+                                        : "sentinel"
+                            )}
                             style={{
                                 fontSize: 11,
                                 fontWeight: 600,
                                 padding: "2px 8px",
                                 borderRadius: 4,
-                                background: "#334155",
-                                color: "#e2e8f0",
-                                border: "1px solid #475569",
+                                background: mapStyle === "s2" ? "#052e1644" : "#334155",
+                                color: mapStyle === "s2" ? "#38bdf8" : "#e2e8f0",
+                                border: `1px solid ${mapStyle === "s2" ? "#38bdf844" : "#475569"}`,
                                 cursor: "pointer",
                                 letterSpacing: "0.05em",
                             }}
                         >
-                            STYL: {mapStyle.toUpperCase()}
+                            {mapStyle === "sentinel" ? "🌑 DARK"
+                                : mapStyle === "s2" ? "🛰 S2"
+                                    : "🗺 OSM"}
                         </button>
+
+                        {/* Przycisk pobrania S2 offline — tylko gdy aktywne S2 i nie trwa pobieranie */}
+                        {mapStyle === "s2" && satStatus && !satStatus.running && (
+                            <button
+                                onClick={() => startSatDownload(satStatus.available)}
+                                title={satStatus.available ? "Odśwież kafelki Sentinel-2" : "Pobierz kafelki Sentinel-2 offline"}
+                                style={{
+                                    fontSize: 11, fontWeight: 600, padding: "2px 7px", borderRadius: 4,
+                                    background: "transparent",
+                                    border: `1px solid ${satStatus.available ? "#33415566" : "#38bdf844"}`,
+                                    color: satStatus.available ? "#475569" : "#38bdf8",
+                                    cursor: "pointer",
+                                    letterSpacing: "0.05em",
+                                }}
+                            >
+                                {satStatus.available ? "↻" : "⬇ POBIERZ"}
+                            </button>
+                        )}
+
                         <span style={{
                             fontSize: 11,
                             fontWeight: 600,
@@ -331,6 +384,37 @@ export const MapContainer = ({ highlightLocation, onHighlightConsumed, pushLog, 
                     </div>
                 </div>
 
+                {/* Pasek postępu pobierania — tylko gdy aktywne */}
+                {satStatus?.running && (
+                    <div style={{
+                        background: "#052e1620",
+                        border: "1px solid #38bdf830",
+                        borderRadius: 8,
+                        padding: "8px 12px",
+                    }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 5 }}>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: "#38bdf8", letterSpacing: "0.05em" }}>
+                                POBIERANIE S2…
+                            </span>
+                            <span style={{ fontSize: 10, color: "#64748b", fontFamily: "monospace" }}>
+                                {satStatus.done} / {satStatus.total}
+                            </span>
+                        </div>
+                        <div style={{ height: 4, background: "#1e293b", borderRadius: 2, overflow: "hidden" }}>
+                            <div style={{
+                                height: "100%", borderRadius: 2, background: "#38bdf8",
+                                width: `${satStatus.total > 0 ? Math.round(satStatus.done / satStatus.total * 100) : 0}%`,
+                                transition: "width 0.4s ease",
+                            }} />
+                        </div>
+                        {satStatus.errors > 0 && (
+                            <div style={{ fontSize: 10, color: "#f87171", fontFamily: "monospace", marginTop: 3 }}>
+                                {satStatus.errors} błędów
+                            </div>
+                        )}
+                    </div>
+                )}
+
                 {/* Wyszukiwarka obiektów */}
                 <div style={{ position: "relative" }}>
                     <div style={{
@@ -344,8 +428,8 @@ export const MapContainer = ({ highlightLocation, onHighlightConsumed, pushLog, 
                         transition: "border-color 0.15s",
                     }}>
                         <svg viewBox="0 0 16 16" fill="none" style={{ width: 13, height: 13, color: "#64748b", flexShrink: 0 }}>
-                            <circle cx="6.5" cy="6.5" r="4" stroke="currentColor" strokeWidth="1.5"/>
-                            <line x1="9.5" y1="9.5" x2="13" y2="13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                            <circle cx="6.5" cy="6.5" r="4" stroke="currentColor" strokeWidth="1.5" />
+                            <line x1="9.5" y1="9.5" x2="13" y2="13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                         </svg>
                         <input
                             type="text"
@@ -607,7 +691,7 @@ export const MapContainer = ({ highlightLocation, onHighlightConsumed, pushLog, 
                                         transition: "all 0.15s",
                                     }}
                                 >
-                                        <span style={{
+                                    <span style={{
                                         width: 16, height: 16,
                                         flexShrink: 0,
                                         opacity: active ? 1 : 0.35,
