@@ -904,6 +904,8 @@ export function LeafletMap({ units, selectedUnit, onSelectUnit, followMode, isOn
             btn.addEventListener("click", () => {
               const select = e.popup.getElement()?.querySelector(".threat-type-select") as HTMLSelectElement | null;
               const threatType = select?.value || "drone";
+              critDepLinesRef.current?.clearLayers();
+              selectedCritIdRef.current = null;
               onSimulateAttack(objectId, threatType);
               marker.closePopup();
             });
